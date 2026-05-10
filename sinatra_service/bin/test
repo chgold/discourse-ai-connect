@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+export RACK_ENV=test
+export DISCOURSE_STUB_MODE=1
+
+if [ ! -d "vendor/bundle" ] && [ ! -f "Gemfile.lock" ]; then
+  echo "→ Installing gems..."
+  bundle install --path vendor/bundle
+fi
+
+echo "→ Running RSpec..."
+exec bundle exec rspec "$@"

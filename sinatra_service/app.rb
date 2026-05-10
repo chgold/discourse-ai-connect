@@ -6,9 +6,11 @@ require 'base64'
 require 'pg'
 require 'net/http'
 require 'uri'
+require 'logger'
 
 require_relative 'services/db'
 require_relative 'services/discourse_api'
+require_relative 'lib/input_validator'
 require_relative 'controllers/manifest'
 require_relative 'controllers/oauth'
 require_relative 'controllers/tools'
@@ -16,22 +18,62 @@ require_relative 'controllers/info'
 require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
-DB.init_schema
-
 class DiscourseAiConnect < Sinatra::Base
+  LOGGER = Logger.new($stdout)
+  LOGGER.progname = 'DiscourseAiConnect'
+
   set :port, ENV.fetch('PORT', 3086).to_i
-  set :bind, '0.0.0.0'
+  set :bind, ENV.fetch('BIND', '0.0.0.0')
   set :show_exceptions, false
+  set :raise_errors, false
+  set :dump_errors, false
+
+  def self.allowed_origins
+    raw = ENV.fetch('ALLOWED_ORIGINS', '')
+    return [] if raw.empty?
+    raw.split(',').map(&:strip).reject(&:empty?)
+  end
+
+  def self.allow_any_origin?
+    ENV['RACK_ENV'] != 'production' && allowed_origins.empty?
+  end
+
+  configure :production, :development do
+    DB.init_schema
+  end
 
   before do
-    response.headers['Access-Control-Allow-Origin'] = '*'
-    response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
+    origin = request.env['HTTP_ORIGIN']
+    allowed = self.class.allowed_origins
+    if origin
+      if allowed.include?(origin)
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
+      elsif self.class.allow_any_origin?
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Vary'] = 'Origin'
+      end
+    elsif self.class.allow_any_origin?
+      response.headers['Access-Control-Allow-Origin'] = '*'
+    end
+    response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, X-Discourse-Uid'
+    response.headers['Access-Control-Allow-Credentials'] = 'true' if origin && allowed.include?(origin)
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'no-referrer'
     content_type :json
   end
 
   options '*' do
     response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     halt 204
+  end
+
+  get '/' do
+    redirect '/ai-connect'
+  end
+
+  get '/health' do
+    { status: 'ok', service: 'discourse-ai-connect', version: '1.0.0' }.to_json
   end
 
   get '/api/ai-connect/manifest' do
@@ -44,15 +86,27 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   get '/oauth/authorize' do
+    rate_check = RateLimitMiddleware.check_oauth(client_ip)
+    halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
     content_type :html
     OAuthController.authorize(params, request.env)
   end
 
   post '/oauth/authorize' do
-    OAuthController.handle_consent(params, request.env)
+    rate_check = RateLimitMiddleware.check_oauth(client_ip)
+    halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
+    result = OAuthController.handle_consent(params, request.env)
+    if result[:redirect]
+      redirect result[:redirect]
+    else
+      status 400
+      result.to_json
+    end
   end
 
   post '/api/ai-connect/token' do
+    rate_check = RateLimitMiddleware.check_token_endpoint(client_ip)
+    halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
     OAuthController.token(params).to_json
   end
 
@@ -64,7 +118,7 @@ class DiscourseAiConnect < Sinatra::Base
 
   post '/api/ai-connect/generate-token' do
     uid = request.env['HTTP_X_DISCOURSE_UID']&.to_i
-    halt 401, { error: 'not_authenticated' }.to_json unless uid && uid > 0
+    halt 401, json_error('not_authenticated') unless uid && uid.positive?
     tokens = DB.save_tokens('ai-agent-default', uid, 'read write')
     { access_token: tokens[:access], token_type: 'Bearer', expires_in: 3600 }.to_json
   end
@@ -72,19 +126,52 @@ class DiscourseAiConnect < Sinatra::Base
   post '/api/ai-connect/v1/tools/:tool_name' do |tool_name|
     auth = AuthMiddleware.require_bearer(request)
     halt 401, auth.to_json if auth[:error]
-    RateLimitMiddleware.check(auth[:token])
+
+    rate_check = RateLimitMiddleware.check_tool(auth[:token])
+    halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
+
     body_str = request.body.read
-    params_json = begin; JSON.parse(body_str); rescue; {}; end
+    params_json = parse_json(body_str)
     result = ToolsController.execute(tool_name, params_json, auth[:uid], auth[:scope])
-    status 404 if result[:error] == 'tool_not_found'
-    status 403 if result[:error] == 'insufficient_scope'
-    { success: !result.key?(:error), data: result }.to_json
+    has_error = result.is_a?(Hash) && result.key?(:error)
+    if has_error
+      status 404 if result[:error] == 'tool_not_found'
+      status 403 if result[:error] == 'insufficient_scope'
+      status 400 if result[:error] == 'invalid_params'
+    end
+    { success: !has_error, data: result }.to_json
+  end
+
+  error JSON::ParserError do
+    status 400
+    json_error('invalid_json', message: env['sinatra.error']&.message)
   end
 
   error do |e|
+    LOGGER.error("Unhandled error #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}")
     status 500
-    { error: 'internal_error', message: e.message }.to_json
+    json_error('internal_error', message: ENV['RACK_ENV'] == 'production' ? 'Internal server error' : e.message)
   end
+
+  helpers do
+    def client_ip
+      request.env['HTTP_X_FORWARDED_FOR']&.split(',')&.first&.strip || request.ip || 'unknown'
+    end
+
+    def json_error(code, **extra)
+      { error: code, **extra }.to_json
+    end
+
+    def parse_json(body_str)
+      return {} if body_str.nil? || body_str.strip.empty?
+      JSON.parse(body_str)
+    rescue JSON::ParserError => e
+      LOGGER.warn("Invalid JSON body: #{e.message}")
+      {}
+    end
+  end
+
+  run! if app_file == $PROGRAM_NAME
 end
 
-DiscourseAiConnect.run!
+DiscourseAiConnect.run! if __FILE__ == $PROGRAM_NAME

@@ -1,0 +1,7 @@
+en:
+  js:
+    ai_connect:
+      menu_title: "AI Connect"
+      generate_token: "Generate AI Token"
+      token_generated: "Token generated successfully."
+      token_copied: "Token copied to clipboard."

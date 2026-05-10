@@ -1,2 +1,8 @@
 *.DS_Store
 sinatra_service/vendor/
+sinatra_service/.bundle/
+sinatra_service/coverage/
+sinatra_service/.env
+sinatra_service/log/
+sinatra_service/tmp/
+*.log

@@ -1,0 +1,17 @@
+.ai-connect-consent {
+  max-width: 480px;
+  margin: 80px auto;
+  padding: 20px;
+  font-family: system-ui, sans-serif;
+
+  .btn-approve {
+    background: #4caf50;
+    color: #fff;
+  }
+
+  .btn-deny {
+    background: #f44336;
+    color: #fff;
+    margin-left: 8px;
+  }
+}

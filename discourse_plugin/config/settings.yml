@@ -1,0 +1,10 @@
+plugins:
+  ai_connect_enabled:
+    default: true
+    client: true
+  ai_connect_bridge_url:
+    default: "http://localhost:3086"
+    client: false
+  ai_connect_notify_login:
+    default: false
+    client: false

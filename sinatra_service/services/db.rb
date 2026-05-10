@@ -1,17 +1,37 @@
 require 'pg'
 require 'securerandom'
+require 'logger'
 
 module DB
-  DB_CONFIG = {
-    host: '127.0.0.1',
-    port: 5432,
-    dbname: 'discourse_dev',
-    user: 'discourse',
-    password: 'REDACTED'
-  }.freeze
+  LOGGER = Logger.new($stdout)
+  LOGGER.progname = 'DB'
+
+  def self.config
+    {
+      host:     ENV.fetch('DB_HOST', '127.0.0.1'),
+      port:     ENV.fetch('DB_PORT', '5432').to_i,
+      dbname:   ENV.fetch('DB_NAME', 'discourse_dev'),
+      user:     ENV.fetch('DB_USER', 'discourse'),
+      password: ENV.fetch('DB_PASSWORD') {
+        # In production, refuse to start without an explicit password
+        if ENV['RACK_ENV'] == 'production'
+          raise 'DB_PASSWORD environment variable is required in production'
+        end
+        ''
+      }
+    }
+  end
 
   def self.conn
-    @conn ||= PG.connect(DB_CONFIG)
+    @conn ||= begin
+      LOGGER.info("Connecting to PostgreSQL #{config[:host]}:#{config[:port]}/#{config[:dbname]} as #{config[:user]}")
+      c = PG.connect(config)
+      c.exec("SET client_min_messages=WARNING") rescue nil
+      c
+    end
+  rescue PG::Error => e
+    LOGGER.error("DB connection failed: #{e.message}")
+    raise
   end
 
   def self.init_schema
@@ -51,11 +71,13 @@ module DB
       CREATE TABLE IF NOT EXISTS ai_rate_limits (
         id SERIAL PRIMARY KEY,
         token VARCHAR(200) NOT NULL,
-        window_type VARCHAR(10) NOT NULL,
+        window_type VARCHAR(20) NOT NULL,
         window_start BIGINT NOT NULL,
         request_count INTEGER DEFAULT 1,
         UNIQUE (token, window_type)
       );
+      CREATE INDEX IF NOT EXISTS idx_ai_tokens_token ON ai_tokens(token);
+      CREATE INDEX IF NOT EXISTS idx_ai_codes_code ON ai_codes(code);
     SQL
     agents = %w[claude chatgpt gemini grok copilot perplexity metaai deepseek ai-agent-default]
     agents.each do |agent|
@@ -112,20 +134,21 @@ module DB
     conn.exec_params("UPDATE ai_tokens SET revoked=TRUE WHERE token=$1 OR parent_token=$1", [token])
   end
 
-  def self.check_rate_limit(token, per_minute: 50, per_hour: 1000)
+  # Generic rate limit check that supports any window key (e.g. token, IP, "oauth_authorize:<ip>")
+  def self.check_rate_limit(key, per_minute: 50, per_hour: 1000, prefix: '')
     now = Time.now.to_i
-    [[60, per_minute, 'minute'], [3600, per_hour, 'hour']].each do |interval, limit, wtype|
+    [[60, per_minute, "#{prefix}minute"], [3600, per_hour, "#{prefix}hour"]].each do |interval, limit, wtype|
       ws = now - (now % interval)
-      result = conn.exec_params("SELECT * FROM ai_rate_limits WHERE token=$1 AND window_type=$2", [token, wtype])
+      result = conn.exec_params("SELECT * FROM ai_rate_limits WHERE token=$1 AND window_type=$2", [key, wtype])
       if (row = result.first)
         if row['window_start'].to_i == ws
-          return { limited: true, window: wtype } if row['request_count'].to_i >= limit
+          return { limited: true, window: wtype, limit: limit } if row['request_count'].to_i >= limit
           conn.exec_params("UPDATE ai_rate_limits SET request_count=request_count+1 WHERE id=$1", [row['id']])
         else
           conn.exec_params("UPDATE ai_rate_limits SET window_start=$1, request_count=1 WHERE id=$2", [ws, row['id']])
         end
       else
-        conn.exec_params("INSERT INTO ai_rate_limits (token,window_type,window_start,request_count) VALUES ($1,$2,$3,1)", [token, wtype, ws])
+        conn.exec_params("INSERT INTO ai_rate_limits (token,window_type,window_start,request_count) VALUES ($1,$2,$3,1)", [key, wtype, ws])
       end
     end
     { limited: false }
