@@ -11,6 +11,10 @@ require 'logger'
 require_relative 'services/db'
 require_relative 'services/discourse_api'
 require_relative 'lib/input_validator'
+require_relative 'lib/module_base'
+require_relative 'lib/module_registry'
+require_relative 'lib/modules/core_module'
+require_relative 'lib/modules/pro_module'
 require_relative 'controllers/manifest'
 require_relative 'controllers/oauth'
 require_relative 'controllers/tools'
@@ -36,6 +40,14 @@ class DiscourseAiConnect < Sinatra::Base
 
   def self.allow_any_origin?
     ENV['RACK_ENV'] != 'production' && allowed_origins.empty?
+  end
+
+  configure do
+    registry = AiConnect::ModuleRegistry.new
+    registry.register(AiConnect::Modules::CoreModule.new, key: 'core')
+    registry.register(AiConnect::Modules::ProModule.new, key: 'pro')
+    AiConnect::ModuleRegistry.run_init_callbacks(registry)
+    set :module_registry, registry
   end
 
   configure :production, :development do
@@ -77,7 +89,7 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   get '/api/ai-connect/manifest' do
-    ManifestController.get.to_json
+    ManifestController.get(registry: settings.module_registry).to_json
   end
 
   get '/ai-connect' do
