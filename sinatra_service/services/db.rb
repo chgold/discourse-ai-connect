@@ -78,6 +78,22 @@ module DB
       );
       CREATE INDEX IF NOT EXISTS idx_ai_tokens_token ON ai_tokens(token);
       CREATE INDEX IF NOT EXISTS idx_ai_codes_code ON ai_codes(code);
+      CREATE TABLE IF NOT EXISTS ai_connect_token_registry (
+        id SERIAL PRIMARY KEY,
+        token_prefix VARCHAR(16) UNIQUE NOT NULL,
+        user_id INTEGER NOT NULL,
+        client_id VARCHAR(80),
+        scope VARCHAR(255),
+        issued_at TIMESTAMP DEFAULT NOW(),
+        expires_at TIMESTAMP,
+        last_used_at TIMESTAMP NULL,
+        revoked_at TIMESTAMP NULL,
+        revoked_by INTEGER NULL,
+        source VARCHAR(20),
+        ip_address VARCHAR(45)
+      );
+      CREATE INDEX IF NOT EXISTS idx_token_registry_prefix ON ai_connect_token_registry(token_prefix);
+      CREATE INDEX IF NOT EXISTS idx_token_registry_user ON ai_connect_token_registry(user_id);
     SQL
     agents = %w[claude chatgpt gemini grok copilot perplexity metaai deepseek ai-agent-default]
     agents.each do |agent|
@@ -110,7 +126,7 @@ module DB
     conn.exec_params("UPDATE ai_codes SET used=TRUE WHERE code=$1", [code])
   end
 
-  def self.save_tokens(client_id, uid, scope)
+  def self.save_tokens(client_id, uid, scope, source: 'oauth', ip_address: nil)
     at = "dsc_#{SecureRandom.hex(32)}"
     rt = "dscr_#{SecureRandom.hex(32)}"
     now = Time.now.to_i
@@ -122,16 +138,93 @@ module DB
       "INSERT INTO ai_tokens (token,token_type,client_id,uid,scope,parent_token,expires_at) VALUES ($1,'refresh',$2,$3,$4,$5,$6)",
       [rt, client_id, uid, scope, at, now + 2_592_000]
     )
+    register_token(at, client_id: client_id, user_id: uid, scope: scope,
+                       expires_at_unix: now + 3600, source: source, ip_address: ip_address)
     { access: at, refresh: rt }
   end
 
   def self.get_token(token)
     result = conn.exec_params("SELECT * FROM ai_tokens WHERE token=$1 AND revoked=FALSE", [token])
-    result.first
+    row = result.first
+    return nil unless row
+    reg = registry_for(token)
+    return nil if reg && reg['revoked_at']
+    row
   end
 
-  def self.revoke_token(token)
+  def self.revoke_token(token, revoked_by: nil)
     conn.exec_params("UPDATE ai_tokens SET revoked=TRUE WHERE token=$1 OR parent_token=$1", [token])
+    prefix = token_prefix(token)
+    conn.exec_params(
+      "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 WHERE token_prefix=$1 AND revoked_at IS NULL",
+      [prefix, revoked_by]
+    )
+  end
+
+  # ---------------------------------------------------------------------------
+  # Token Registry — visibility + revocation for issued bearer tokens
+  # ---------------------------------------------------------------------------
+
+  TOKEN_PREFIX_LENGTH = 16
+
+  def self.token_prefix(token)
+    return nil if token.nil?
+    token.to_s[0, TOKEN_PREFIX_LENGTH]
+  end
+
+  def self.register_token(token, client_id:, user_id:, scope:, expires_at_unix:, source: 'oauth', ip_address: nil)
+    prefix = token_prefix(token)
+    return nil unless prefix
+    conn.exec_params(<<~SQL, [prefix, user_id, client_id, scope, expires_at_unix, source, ip_address])
+      INSERT INTO ai_connect_token_registry
+        (token_prefix, user_id, client_id, scope, issued_at, expires_at, source, ip_address)
+      VALUES ($1, $2, $3, $4, NOW(), to_timestamp($5), $6, $7)
+      ON CONFLICT (token_prefix) DO NOTHING
+    SQL
+  end
+
+  def self.registry_for(token)
+    prefix = token_prefix(token)
+    return nil unless prefix
+    conn.exec_params(
+      "SELECT * FROM ai_connect_token_registry WHERE token_prefix=$1",
+      [prefix]
+    ).first
+  end
+
+  def self.mark_token_used(token)
+    prefix = token_prefix(token)
+    return nil unless prefix
+    conn.exec_params(
+      "UPDATE ai_connect_token_registry SET last_used_at=NOW() WHERE token_prefix=$1 AND revoked_at IS NULL",
+      [prefix]
+    )
+  end
+
+  def self.list_tokens(include_revoked: true)
+    sql = "SELECT * FROM ai_connect_token_registry"
+    sql += " WHERE revoked_at IS NULL" unless include_revoked
+    sql += " ORDER BY issued_at DESC"
+    conn.exec(sql).to_a
+  end
+
+  def self.revoke_token_by_prefix(prefix, revoked_by: nil)
+    return false if prefix.nil? || prefix.empty?
+    reg = conn.exec_params(
+      "SELECT * FROM ai_connect_token_registry WHERE token_prefix=$1 AND revoked_at IS NULL",
+      [prefix]
+    ).first
+    return false unless reg
+    conn.exec_params(
+      "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 WHERE token_prefix=$1",
+      [prefix, revoked_by]
+    )
+    # Also revoke the actual token + refresh chain in ai_tokens
+    conn.exec_params(
+      "UPDATE ai_tokens SET revoked=TRUE WHERE token LIKE $1 OR parent_token LIKE $1",
+      ["#{prefix}%"]
+    )
+    true
   end
 
   # Generic rate limit check that supports any window key (e.g. token, IP, "oauth_authorize:<ip>")

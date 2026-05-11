@@ -116,7 +116,7 @@ module OAuthController
     { redirect: dest }
   end
 
-  def self.token(params)
+  def self.token(params, ip: nil)
     grant = params['grant_type']
 
     if grant == 'authorization_code'
@@ -125,7 +125,7 @@ module OAuthController
       return { error: 'invalid_grant', error_description: 'Code expired or already used' } unless rec['used'] == 'f' && Time.now.to_i < rec['expires_at'].to_i
       return { error: 'invalid_grant', error_description: 'PKCE failed' } unless verify_pkce(params['code_verifier'], rec['code_challenge'])
       DB.mark_code_used(params['code'])
-      tokens = DB.save_tokens(rec['client_id'], rec['uid'].to_i, rec['scope'])
+      tokens = DB.save_tokens(rec['client_id'], rec['uid'].to_i, rec['scope'], source: 'oauth', ip_address: ip)
       return { access_token: tokens[:access], token_type: 'Bearer', expires_in: 3600, refresh_token: tokens[:refresh], scope: rec['scope'] }
     end
 
@@ -133,7 +133,7 @@ module OAuthController
       rec = DB.get_token(params['refresh_token'])
       return { error: 'invalid_grant' } unless rec && rec['token_type'] == 'refresh' && Time.now.to_i < rec['expires_at'].to_i
       DB.revoke_token(params['refresh_token'])
-      tokens = DB.save_tokens(rec['client_id'], rec['uid'].to_i, rec['scope'])
+      tokens = DB.save_tokens(rec['client_id'], rec['uid'].to_i, rec['scope'], source: 'refresh', ip_address: ip)
       return { access_token: tokens[:access], token_type: 'Bearer', expires_in: 3600, refresh_token: tokens[:refresh], scope: rec['scope'] }
     end
 

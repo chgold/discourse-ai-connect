@@ -23,6 +23,8 @@ require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
 class DiscourseAiConnect < Sinatra::Base
+  PLUGIN_VERSION = '1.1.0'
+
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DiscourseAiConnect'
 
@@ -76,7 +78,7 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   options '*' do
-    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+    response.headers['Access-Control-Allow-Methods'] = 'GET, POST, DELETE, OPTIONS'
     halt 204
   end
 
@@ -85,7 +87,7 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   get '/health' do
-    { status: 'ok', service: 'discourse-ai-connect', version: '1.0.0' }.to_json
+    { status: 'ok', service: 'discourse-ai-connect', version: PLUGIN_VERSION }.to_json
   end
 
   get '/api/ai-connect/manifest' do
@@ -119,20 +121,38 @@ class DiscourseAiConnect < Sinatra::Base
   post '/api/ai-connect/token' do
     rate_check = RateLimitMiddleware.check_token_endpoint(client_ip)
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
-    OAuthController.token(params).to_json
+    OAuthController.token(params, ip: client_ip).to_json
   end
 
   post '/api/ai-connect/revoke' do
     token = request.env['HTTP_AUTHORIZATION']&.sub(/^Bearer /, '')
-    DB.revoke_token(token) if token
+    revoker = request.env['HTTP_X_DISCOURSE_UID']&.to_i
+    DB.revoke_token(token, revoked_by: revoker) if token
     { success: true }.to_json
   end
 
   post '/api/ai-connect/generate-token' do
     uid = request.env['HTTP_X_DISCOURSE_UID']&.to_i
     halt 401, json_error('not_authenticated') unless uid && uid.positive?
-    tokens = DB.save_tokens('ai-agent-default', uid, 'read write')
+    tokens = DB.save_tokens('ai-agent-default', uid, 'read write',
+                            source: 'generator', ip_address: client_ip)
     { access_token: tokens[:access], token_type: 'Bearer', expires_in: 3600 }.to_json
+  end
+
+  get '/api/ai-connect/admin/tokens' do
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    { tokens: DB.list_tokens }.to_json
+  end
+
+  delete '/api/ai-connect/admin/tokens/:prefix' do |prefix|
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    ok = DB.revoke_token_by_prefix(prefix, revoked_by: auth[:uid])
+    halt 404, json_error('not_found') unless ok
+    { success: true }.to_json
   end
 
   post '/api/ai-connect/v1/tools/:tool_name' do |tool_name|

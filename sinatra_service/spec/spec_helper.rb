@@ -45,7 +45,8 @@ require_relative '../app'
 
 module DBTestHelpers
   def reset_db!
-    DB.conn.exec('TRUNCATE ai_clients, ai_codes, ai_tokens, ai_rate_limits RESTART IDENTITY')
+    DB.init_schema
+    DB.conn.exec('TRUNCATE ai_clients, ai_codes, ai_tokens, ai_rate_limits, ai_connect_token_registry RESTART IDENTITY')
     DB.init_schema
   end
 end

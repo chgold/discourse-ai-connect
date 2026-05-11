@@ -1,0 +1,34 @@
+#!/bin/bash
+set -e
+
+cd "$(dirname "$0")/.."
+
+VERSION=$(grep -oP "PLUGIN_VERSION\s*=\s*['\"]\K[\d.]+" app.rb | head -1)
+if [ -z "$VERSION" ]; then
+  echo "ERROR: could not determine PLUGIN_VERSION from app.rb" >&2
+  exit 1
+fi
+
+echo "Building discourse-ai-connect v${VERSION}..."
+
+mkdir -p dist
+
+if command -v bundle >/dev/null 2>&1; then
+  bundle config set --local without 'development test'
+  bundle install
+fi
+
+ARTIFACT="dist/discourse-ai-connect-${VERSION}.zip"
+rm -f "$ARTIFACT"
+
+zip -r "$ARTIFACT" . \
+  --exclude "*.git*" \
+  --exclude "spec/*" \
+  --exclude "coverage/*" \
+  --exclude "dist/*" \
+  --exclude ".env" \
+  --exclude "*.log" \
+  --exclude "vendor/bundle/*" \
+  --exclude "tmp/*"
+
+echo "Built: ${ARTIFACT}"
