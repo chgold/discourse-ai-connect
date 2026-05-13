@@ -33,6 +33,7 @@ RSpec.describe 'Manifest endpoint' do
     clients = body['auth']['registered_clients']
     expect(clients).to be_a(Hash)
     expect(clients['claude']).to eq('claude')
+    expect(clients['webmcp-master']).to eq('WebMCP Master')
   end
 
   it 'health endpoint returns ok' do

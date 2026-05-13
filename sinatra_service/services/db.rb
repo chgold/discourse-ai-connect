@@ -95,11 +95,22 @@ module DB
       CREATE INDEX IF NOT EXISTS idx_token_registry_prefix ON ai_connect_token_registry(token_prefix);
       CREATE INDEX IF NOT EXISTS idx_token_registry_user ON ai_connect_token_registry(user_id);
     SQL
-    agents = %w[claude chatgpt gemini grok copilot perplexity metaai deepseek ai-agent-default]
-    agents.each do |agent|
+    seeded_clients = [
+      { id: 'webmcp-master',     name: 'WebMCP Master',     scopes: 'read write delete manage_users' },
+      { id: 'claude',            name: 'claude',            scopes: 'read write delete' },
+      { id: 'chatgpt',           name: 'chatgpt',           scopes: 'read write delete' },
+      { id: 'gemini',            name: 'gemini',            scopes: 'read write delete' },
+      { id: 'grok',              name: 'grok',              scopes: 'read write delete' },
+      { id: 'copilot',           name: 'copilot',           scopes: 'read write delete' },
+      { id: 'perplexity',        name: 'perplexity',        scopes: 'read write delete' },
+      { id: 'metaai',            name: 'metaai',            scopes: 'read write delete' },
+      { id: 'deepseek',          name: 'deepseek',          scopes: 'read write delete' },
+      { id: 'ai-agent-default',  name: 'ai-agent-default',  scopes: 'read write delete' },
+    ]
+    seeded_clients.each do |c|
       conn.exec_params(
         "INSERT INTO ai_clients (client_id, client_name, redirect_uris, scopes) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
-        [agent, agent, 'urn:ietf:wg:oauth:2.0:oob', 'read write delete']
+        [c[:id], c[:name], 'urn:ietf:wg:oauth:2.0:oob', c[:scopes]]
       )
     end
   end
