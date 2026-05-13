@@ -26,6 +26,15 @@ RSpec.describe 'Manifest endpoint' do
     end
   end
 
+  it 'exposes registered_clients map under auth with seeded clients' do
+    get '/api/ai-connect/manifest'
+    body = JSON.parse(last_response.body)
+    expect(body['auth']).to have_key('registered_clients')
+    clients = body['auth']['registered_clients']
+    expect(clients).to be_a(Hash)
+    expect(clients['claude']).to eq('claude')
+  end
+
   it 'health endpoint returns ok' do
     get '/health'
     expect(last_response.status).to eq(200)

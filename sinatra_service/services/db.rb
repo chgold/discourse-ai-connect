@@ -109,6 +109,17 @@ module DB
     result.first
   end
 
+  def self.list_clients
+    conn.exec("SELECT client_id, client_name FROM ai_clients ORDER BY id ASC").to_a
+  end
+
+  def self.registered_clients_map
+    list_clients.each_with_object({}) { |row, h| h[row['client_id']] = row['client_name'] }
+  rescue PG::Error => e
+    LOGGER.warn("registered_clients_map failed: #{e.message}")
+    {}
+  end
+
   def self.save_code(code, client_id, uid, scope, challenge, redirect_uri)
     expires = Time.now.to_i + 600
     conn.exec_params(

@@ -22,6 +22,7 @@ module ManifestController
         token_url:              "#{BASE_URL}/api/ai-connect/token",
         revocation_url:         "#{BASE_URL}/api/ai-connect/revoke",
         scopes: { read: 'Read topics and posts', write: 'Create topics and replies (Pro)', delete: 'Delete content (Pro)' },
+        registered_clients:     DB.registered_clients_map,
       },
       tools: registry.all_tools(scope: scope),
     }
