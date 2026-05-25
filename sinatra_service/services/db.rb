@@ -6,6 +6,14 @@ module DB
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DB'
 
+  CLEANUP_INTERVAL   = 86_400  # 24 hours in seconds
+  UNUSED_DAYS        = 30
+  INACTIVE_DAYS      = 180
+  EXPIRED_GRACE_DAYS = 90
+  PURGE_DAYS         = 365
+
+  @last_cleanup_at = nil
+
   def self.config
     {
       host:     ENV.fetch('DB_HOST', '127.0.0.1'),
@@ -13,7 +21,6 @@ module DB
       dbname:   ENV.fetch('DB_NAME', 'discourse_dev'),
       user:     ENV.fetch('DB_USER', 'discourse'),
       password: ENV.fetch('DB_PASSWORD') {
-        # In production, refuse to start without an explicit password
         if ENV['RACK_ENV'] == 'production'
           raise 'DB_PASSWORD environment variable is required in production'
         end
@@ -95,6 +102,18 @@ module DB
       CREATE INDEX IF NOT EXISTS idx_token_registry_prefix ON ai_connect_token_registry(token_prefix);
       CREATE INDEX IF NOT EXISTS idx_token_registry_user ON ai_connect_token_registry(user_id);
     SQL
+
+    # Idempotent v2 column migrations — last_used_ip, last_used_ua
+    conn.exec(<<~SQL)
+      ALTER TABLE ai_connect_token_registry
+        ADD COLUMN IF NOT EXISTS last_used_ip VARCHAR(45) NULL,
+        ADD COLUMN IF NOT EXISTS last_used_ua VARCHAR(255) NULL;
+      CREATE INDEX IF NOT EXISTS idx_token_registry_last_used
+        ON ai_connect_token_registry(last_used_at);
+      CREATE INDEX IF NOT EXISTS idx_token_registry_revoked_expires
+        ON ai_connect_token_registry(revoked_at, expires_at);
+    SQL
+
     seeded_clients = [
       { id: 'webmcp-master',     name: 'WebMCP Master',     scopes: 'read write delete manage_users' },
       { id: 'claude',            name: 'claude',            scopes: 'read write delete' },
@@ -189,6 +208,16 @@ module DB
 
   TOKEN_PREFIX_LENGTH = 16
 
+  # Token state filters — used by list_tokens and bulk-revoke
+  FILTER_CLAUSES = {
+    'active'   => "revoked_at IS NULL AND expires_at > NOW()",
+    'used'     => "revoked_at IS NULL AND expires_at > NOW() AND last_used_at IS NOT NULL AND last_used_at > NOW() - 30 * INTERVAL '1 day'",
+    'unused'   => "revoked_at IS NULL AND expires_at > NOW() AND last_used_at IS NULL",
+    'inactive' => "revoked_at IS NULL AND expires_at > NOW() AND last_used_at IS NOT NULL AND last_used_at < NOW() - 30 * INTERVAL '1 day'",
+    'expired'  => "revoked_at IS NULL AND expires_at <= NOW()",
+    'revoked'  => "revoked_at IS NOT NULL"
+  }.freeze
+
   def self.token_prefix(token)
     return nil if token.nil?
     token.to_s[0, TOKEN_PREFIX_LENGTH]
@@ -214,26 +243,74 @@ module DB
     ).first
   end
 
-  def self.mark_token_used(token)
+  # touch_last_used — best-effort: updates last_used_at, last_used_ip, last_used_ua.
+  # Never raises; failure must never block the authenticated request.
+  def self.touch_last_used(token, ip: nil, ua: nil)
     prefix = token_prefix(token)
     return nil unless prefix
     conn.exec_params(
-      "UPDATE ai_connect_token_registry SET last_used_at=NOW() WHERE token_prefix=$1 AND revoked_at IS NULL",
-      [prefix]
+      <<~SQL,
+        UPDATE ai_connect_token_registry
+        SET last_used_at = NOW(),
+            last_used_ip = COALESCE($2, last_used_ip),
+            last_used_ua = COALESCE(LEFT($3, 255), last_used_ua)
+        WHERE token_prefix = $1 AND revoked_at IS NULL
+      SQL
+      [prefix, ip, ua]
     )
+    nil
+  rescue PG::Error => e
+    LOGGER.warn("touch_last_used failed (best-effort): #{e.message}")
+    nil
   end
 
-  def self.list_tokens(include_revoked: true)
+  # Backward-compatible alias — kept so existing callers don't break
+  def self.mark_token_used(token)
+    touch_last_used(token)
+  end
+
+  # ---------------------------------------------------------------------------
+  # List helpers
+  # ---------------------------------------------------------------------------
+
+  def self.list_tokens(include_revoked: true, filter: nil)
+    conditions = []
+    if filter && FILTER_CLAUSES.key?(filter.to_s)
+      conditions << FILTER_CLAUSES[filter.to_s]
+    elsif !include_revoked
+      conditions << "revoked_at IS NULL"
+    end
     sql = "SELECT * FROM ai_connect_token_registry"
-    sql += " WHERE revoked_at IS NULL" unless include_revoked
+    sql += " WHERE #{conditions.join(' AND ')}" unless conditions.empty?
     sql += " ORDER BY issued_at DESC"
     conn.exec(sql).to_a
   end
 
+  def self.list_tokens_for_user(uid, filter: nil)
+    conditions = ["user_id = $1"]
+    conditions << FILTER_CLAUSES[filter.to_s] if filter && FILTER_CLAUSES.key?(filter.to_s)
+    sql  = "SELECT * FROM ai_connect_token_registry"
+    sql += " WHERE #{conditions.join(' AND ')}"
+    sql += " ORDER BY issued_at DESC"
+    conn.exec_params(sql, [uid]).to_a
+  end
+
+  def self.user_has_active_tokens?(uid)
+    result = conn.exec_params(
+      "SELECT 1 FROM ai_connect_token_registry WHERE user_id=$1 AND revoked_at IS NULL AND expires_at > NOW() LIMIT 1",
+      [uid]
+    )
+    result.ntuples > 0
+  end
+
+  # ---------------------------------------------------------------------------
+  # Revoke methods
+  # ---------------------------------------------------------------------------
+
   def self.revoke_token_by_prefix(prefix, revoked_by: nil)
     return false if prefix.nil? || prefix.empty?
     reg = conn.exec_params(
-      "SELECT * FROM ai_connect_token_registry WHERE token_prefix=$1 AND revoked_at IS NULL",
+      "SELECT id FROM ai_connect_token_registry WHERE token_prefix=$1 AND revoked_at IS NULL",
       [prefix]
     ).first
     return false unless reg
@@ -241,15 +318,191 @@ module DB
       "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 WHERE token_prefix=$1",
       [prefix, revoked_by]
     )
-    # Also revoke the actual token + refresh chain in ai_tokens
-    conn.exec_params(
-      "UPDATE ai_tokens SET revoked=TRUE WHERE token LIKE $1 OR parent_token LIKE $1",
-      ["#{prefix}%"]
-    )
+    cascade_ai_tokens_by_prefix(prefix)
     true
   end
 
-  # Generic rate limit check that supports any window key (e.g. token, IP, "oauth_authorize:<ip>")
+  # Revoke a single registry row by its integer id
+  def self.revoke_by_id(id, revoked_by: nil)
+    result = conn.exec_params(
+      "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 WHERE id=$1 AND revoked_at IS NULL RETURNING token_prefix",
+      [id, revoked_by]
+    )
+    return false if result.ntuples == 0
+    cascade_ai_tokens_by_prefix(result.first['token_prefix'])
+    true
+  end
+
+  # Revoke every active token belonging to a user
+  def self.revoke_all_for_user(uid, revoked_by: nil)
+    result = conn.exec_params(
+      "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 WHERE user_id=$1 AND revoked_at IS NULL RETURNING token_prefix",
+      [uid, revoked_by]
+    )
+    result.each { |row| cascade_ai_tokens_by_prefix(row['token_prefix']) }
+    result.ntuples
+  end
+
+  # Revoke an explicit list of registry ids
+  def self.revoke_by_ids(ids, revoked_by: nil)
+    return 0 if ids.nil? || ids.empty?
+    safe_ids = ids.map(&:to_i).select(&:positive?)
+    return 0 if safe_ids.empty?
+    placeholders = safe_ids.each_index.map { |i| "$#{i + 2}" }.join(',')
+    result = conn.exec_params(
+      "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$1 WHERE id IN (#{placeholders}) AND revoked_at IS NULL RETURNING token_prefix",
+      [revoked_by, *safe_ids]
+    )
+    result.each { |row| cascade_ai_tokens_by_prefix(row['token_prefix']) }
+    result.ntuples
+  end
+
+  # Revoke tokens never used (last_used_at IS NULL) older than `days` days
+  def self.revoke_unused(days: UNUSED_DAYS, revoked_by: nil)
+    result = if days.nil? || days.to_i <= 0
+      conn.exec_params(
+        <<~SQL, [revoked_by]
+          UPDATE ai_connect_token_registry
+          SET revoked_at = NOW(), revoked_by = $1
+          WHERE revoked_at IS NULL
+            AND last_used_at IS NULL
+          RETURNING token_prefix
+        SQL
+      )
+    else
+      conn.exec_params(
+        <<~SQL, [revoked_by, days.to_i]
+          UPDATE ai_connect_token_registry
+          SET revoked_at = NOW(), revoked_by = $1
+          WHERE revoked_at IS NULL
+            AND last_used_at IS NULL
+            AND issued_at < NOW() - $2 * INTERVAL '1 day'
+          RETURNING token_prefix
+        SQL
+      )
+    end
+    result.each { |row| cascade_ai_tokens_by_prefix(row['token_prefix']) }
+    result.ntuples
+  end
+
+  # Revoke tokens not used in more than `days` days
+  def self.revoke_inactive(days: INACTIVE_DAYS, revoked_by: nil)
+    result = conn.exec_params(
+      <<~SQL,
+        UPDATE ai_connect_token_registry
+        SET revoked_at = NOW(), revoked_by = $1
+        WHERE revoked_at IS NULL
+          AND last_used_at IS NOT NULL
+          AND last_used_at < NOW() - $2 * INTERVAL '1 day'
+        RETURNING token_prefix
+      SQL
+      [revoked_by, days]
+    )
+    result.each { |row| cascade_ai_tokens_by_prefix(row['token_prefix']) }
+    result.ntuples
+  end
+
+  # Revoke a list of token prefixes (by-prefix), optionally only those issued before
+  # before_time (unix int).  Cascades the refresh-token chain in ai_tokens.
+  # Used by upgrade/backfill path (see SPEC §9).
+  def self.cascade_revoke_oauth(prefixes, before_time: nil, revoked_by: 0)
+    return 0 if prefixes.nil? || prefixes.empty?
+    count = 0
+    prefixes.each do |prefix|
+      next if prefix.nil? || prefix.empty?
+      result = if before_time
+        conn.exec_params(
+          "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 WHERE token_prefix=$1 AND revoked_at IS NULL AND issued_at < to_timestamp($3) RETURNING token_prefix",
+          [prefix, revoked_by, before_time.to_i]
+        )
+      else
+        conn.exec_params(
+          "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 WHERE token_prefix=$1 AND revoked_at IS NULL RETURNING token_prefix",
+          [prefix, revoked_by]
+        )
+      end
+      next if result.ntuples == 0
+      cascade_ai_tokens_by_prefix(prefix)
+      count += 1
+    end
+    count
+  end
+
+  # ---------------------------------------------------------------------------
+  # Auto-cleanup (lazy / scheduled)
+  # ---------------------------------------------------------------------------
+
+  def self.should_run_cleanup?
+    return true if @last_cleanup_at.nil?
+    Time.now.to_i - @last_cleanup_at >= CLEANUP_INTERVAL
+  end
+
+  # Runs all four cleanup rules from SPEC §5.1.
+  # Returns a hash of counts for audit logging.
+  # Never raises — caller should rescue.
+  def self.run_cleanup(revoked_by: nil)
+    @last_cleanup_at = Time.now.to_i
+    counts = {}
+
+    # Rule 1: never-used tokens older than 30 days
+    r = conn.exec_params(
+      <<~SQL, [revoked_by]
+        UPDATE ai_connect_token_registry
+        SET revoked_at = NOW(), revoked_by = $1
+        WHERE revoked_at IS NULL
+          AND last_used_at IS NULL
+          AND issued_at < NOW() - #{UNUSED_DAYS} * INTERVAL '1 day'
+        RETURNING token_prefix
+      SQL
+    )
+    r.each { |row| cascade_ai_tokens_by_prefix(row['token_prefix']) }
+    counts[:unused_revoked] = r.ntuples
+
+    # Rule 2: inactive tokens (last used > 180 days ago)
+    r = conn.exec_params(
+      <<~SQL, [revoked_by]
+        UPDATE ai_connect_token_registry
+        SET revoked_at = NOW(), revoked_by = $1
+        WHERE revoked_at IS NULL
+          AND last_used_at IS NOT NULL
+          AND last_used_at < NOW() - #{INACTIVE_DAYS} * INTERVAL '1 day'
+        RETURNING token_prefix
+      SQL
+    )
+    r.each { |row| cascade_ai_tokens_by_prefix(row['token_prefix']) }
+    counts[:inactive_revoked] = r.ntuples
+
+    # Rule 3: expired > 90 days ago but not yet revoked
+    r = conn.exec_params(
+      <<~SQL, [revoked_by]
+        UPDATE ai_connect_token_registry
+        SET revoked_at = NOW(), revoked_by = $1
+        WHERE revoked_at IS NULL
+          AND expires_at < NOW() - #{EXPIRED_GRACE_DAYS} * INTERVAL '1 day'
+        RETURNING token_prefix
+      SQL
+    )
+    r.each { |row| cascade_ai_tokens_by_prefix(row['token_prefix']) }
+    counts[:expired_revoked] = r.ntuples
+
+    # Rule 4: hard-delete rows revoked > 365 days ago (GDPR purge)
+    purged = conn.exec(
+      "DELETE FROM ai_connect_token_registry WHERE revoked_at IS NOT NULL AND revoked_at < NOW() - #{PURGE_DAYS} * INTERVAL '1 day' RETURNING id"
+    )
+    counts[:purged] = purged.ntuples
+
+    total = counts.values.sum
+    LOGGER.info("Token cleanup complete: #{counts.inspect} (total=#{total})")
+    counts
+  rescue PG::Error => e
+    LOGGER.error("run_cleanup failed: #{e.message}")
+    {}
+  end
+
+  # ---------------------------------------------------------------------------
+  # Rate limiting
+  # ---------------------------------------------------------------------------
+
   def self.check_rate_limit(key, per_minute: 50, per_hour: 1000, prefix: '')
     now = Time.now.to_i
     [[60, per_minute, "#{prefix}minute"], [3600, per_hour, "#{prefix}hour"]].each do |interval, limit, wtype|
@@ -268,4 +521,19 @@ module DB
     end
     { limited: false }
   end
+
+  # ---------------------------------------------------------------------------
+  # Private helpers
+  # ---------------------------------------------------------------------------
+
+  def self.cascade_ai_tokens_by_prefix(prefix)
+    return unless prefix
+    conn.exec_params(
+      "UPDATE ai_tokens SET revoked=TRUE WHERE token LIKE $1 OR parent_token LIKE $1",
+      ["#{prefix}%"]
+    )
+  rescue PG::Error => e
+    LOGGER.warn("cascade_ai_tokens_by_prefix failed for #{prefix}: #{e.message}")
+  end
+  private_class_method :cascade_ai_tokens_by_prefix
 end

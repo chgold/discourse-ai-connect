@@ -5,3 +5,61 @@ en:
       generate_token: "Generate AI Token"
       token_generated: "Token generated successfully."
       token_copied: "Token copied to clipboard."
+
+      # Token management page
+      tokens_page_title: "AI Access Tokens"
+      tokens_description: "Manage the AI access tokens connected to your account. Revoke any token you no longer use."
+      no_tokens: "No tokens found."
+      loading: "Loading..."
+      error_loading: "Failed to load tokens."
+
+      # Filters
+      filter_all: "All"
+      filter_active: "Active"
+      filter_unused: "Unused"
+      filter_inactive: "Inactive"
+      filter_expired: "Expired"
+      filter_revoked: "Revoked"
+
+      # Table columns
+      col_prefix: "Token"
+      col_source: "Source"
+      col_scope: "Scope"
+      col_issued: "Issued"
+      col_last_used: "Last Used"
+      col_last_ip: "Last IP"
+      col_last_ua: "Client"
+      col_state: "State"
+      col_actions: "Actions"
+
+      # States (badges)
+      state_active: "Active"
+      state_unused: "Unused"
+      state_inactive: "Inactive"
+      state_expired: "Expired"
+      state_revoked: "Revoked"
+
+      # Actions
+      revoke: "Revoke"
+      revoke_confirm: "Revoke this token? This cannot be undone."
+      revoke_all_unused: "Revoke All Unused"
+      revoke_all_unused_confirm: "Revoke all tokens that have never been used? This cannot be undone."
+      revoke_all_inactive: "Revoke All Inactive"
+      revoke_all_inactive_confirm: "Revoke all tokens not used in 30+ days? This cannot be undone."
+      revoke_all_danger: "Revoke ALL Tokens"
+      revoke_all_danger_confirm: "DANGER: Revoke ALL your active tokens? All AI agents will lose access immediately. This cannot be undone."
+      revoke_all_danger_confirm2: "Are you absolutely sure? Type REVOKE to confirm."
+      revoking: "Revoking..."
+      revoke_success: "Token revoked."
+      bulk_revoke_success: "%{count} token(s) revoked."
+      revoke_error: "Failed to revoke token."
+
+      # Time
+      never: "Never"
+      just_now: "Just now"
+
+      # Admin section
+      admin_title: "Token Management"
+      admin_description: "View and manage all AI Connect tokens issued to users on this forum."
+      admin_filter_user: "Filter by user ID:"
+      admin_search: "Search"

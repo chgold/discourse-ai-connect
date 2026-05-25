@@ -60,6 +60,109 @@ module AiConnect
       render json: { error: 'bridge_unreachable', message: e.message }, status: 502
     end
 
+    # -------------------------------------------------------------------------
+    # User token management — proxied to sinatra_service
+    # -------------------------------------------------------------------------
+
+    # GET  /ai-connect-plugin/tokens[?filter=...]
+    def user_tokens
+      raise Discourse::NotLoggedIn unless current_user
+
+      filter = params[:filter].presence
+      path   = filter ? "/api/ai-connect/tokens?filter=#{CGI.escape(filter)}" : '/api/ai-connect/tokens'
+      result = BridgeClient.proxy(:get, path, user: current_user)
+      render json: result[:body], status: result[:status]
+    rescue BridgeClient::BridgeError => e
+      render json: { error: 'bridge_unreachable', message: e.message }, status: 502
+    end
+
+    # DELETE /ai-connect-plugin/tokens/:prefix
+    def revoke_user_token
+      raise Discourse::NotLoggedIn unless current_user
+
+      prefix = params[:prefix].to_s.strip
+      return render json: { error: 'invalid_prefix' }, status: 422 if prefix.empty?
+
+      result = BridgeClient.proxy(:delete, "/api/ai-connect/tokens/#{prefix}", user: current_user)
+      render json: result[:body], status: result[:status]
+    rescue BridgeClient::BridgeError => e
+      render json: { error: 'bridge_unreachable', message: e.message }, status: 502
+    end
+
+    # POST /ai-connect-plugin/tokens/bulk-revoke
+    # body: { filter: "unused|inactive|all" }
+    def bulk_revoke_user_tokens
+      raise Discourse::NotLoggedIn unless current_user
+
+      filter = params.require(:filter)
+      unless %w[unused inactive all].include?(filter)
+        return render json: { error: 'invalid_filter' }, status: 422
+      end
+
+      result = BridgeClient.proxy(
+        :post,
+        '/api/ai-connect/tokens/bulk-revoke',
+        user: current_user,
+        body: { filter: filter }
+      )
+      render json: result[:body], status: result[:status]
+    rescue BridgeClient::BridgeError => e
+      render json: { error: 'bridge_unreachable', message: e.message }, status: 502
+    end
+
+    # -------------------------------------------------------------------------
+    # Admin token management — proxied to sinatra_service (admin only)
+    # -------------------------------------------------------------------------
+
+    # GET  /ai-connect-plugin/admin/tokens[?filter=...]
+    def admin_tokens
+      raise Discourse::InvalidAccess unless current_user&.admin?
+
+      filter = params[:filter].presence
+      path   = filter ? "/api/ai-connect/admin/tokens?filter=#{CGI.escape(filter)}" : '/api/ai-connect/admin/tokens'
+      result = BridgeClient.proxy(:get, path, user: current_user)
+      render json: result[:body], status: result[:status]
+    rescue BridgeClient::BridgeError => e
+      render json: { error: 'bridge_unreachable', message: e.message }, status: 502
+    end
+
+    # DELETE /ai-connect-plugin/admin/tokens/:prefix
+    def admin_revoke_token
+      raise Discourse::InvalidAccess unless current_user&.admin?
+
+      prefix = params[:prefix].to_s.strip
+      return render json: { error: 'invalid_prefix' }, status: 422 if prefix.empty?
+
+      result = BridgeClient.proxy(:delete, "/api/ai-connect/admin/tokens/#{prefix}", user: current_user)
+      render json: result[:body], status: result[:status]
+    rescue BridgeClient::BridgeError => e
+      render json: { error: 'bridge_unreachable', message: e.message }, status: 502
+    end
+
+    # POST /ai-connect-plugin/admin/tokens/bulk-revoke
+    # body: { filter: "unused|inactive|all", days: N (optional) }
+    def admin_bulk_revoke_tokens
+      raise Discourse::InvalidAccess unless current_user&.admin?
+
+      filter = params.require(:filter)
+      unless %w[unused inactive all].include?(filter)
+        return render json: { error: 'invalid_filter' }, status: 422
+      end
+
+      body = { filter: filter }
+      body[:days] = params[:days].to_i if params[:days].present?
+
+      result = BridgeClient.proxy(
+        :post,
+        '/api/ai-connect/admin/tokens/bulk-revoke',
+        user: current_user,
+        body: body
+      )
+      render json: result[:body], status: result[:status]
+    rescue BridgeClient::BridgeError => e
+      render json: { error: 'bridge_unreachable', message: e.message }, status: 502
+    end
+
     private
 
     def ensure_enabled

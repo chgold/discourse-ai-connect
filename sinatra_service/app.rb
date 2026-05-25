@@ -54,6 +54,16 @@ class DiscourseAiConnect < Sinatra::Base
 
   configure :production, :development do
     DB.init_schema
+
+    # Daily cleanup scheduler — background thread, fires once per process lifetime
+    # whenever CLEANUP_INTERVAL elapses.  Errors are swallowed so the process
+    # never crashes due to a cleanup failure.
+    Thread.new do
+      loop do
+        sleep 3600 # wake every hour; DB.should_run_cleanup? guards the 24 h window
+        DB.run_cleanup rescue nil if DB.should_run_cleanup?
+      end
+    end
   end
 
   before do
@@ -139,21 +149,120 @@ class DiscourseAiConnect < Sinatra::Base
     { access_token: tokens[:access], token_type: 'Bearer', expires_in: 3600 }.to_json
   end
 
+  # ---------------------------------------------------------------------------
+  # Admin — token management (requires Bearer + delete scope)
+  # ---------------------------------------------------------------------------
+
+  # GET /api/ai-connect/admin/tokens[?filter=active|unused|inactive|expired|revoked]
   get '/api/ai-connect/admin/tokens' do
     auth = AuthMiddleware.require_bearer(request)
     halt 401, auth.to_json if auth[:error]
     halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
-    { tokens: DB.list_tokens }.to_json
+
+    filter = params['filter']
+    { tokens: DB.list_tokens(filter: filter) }.to_json
   end
 
+  # DELETE /api/ai-connect/admin/tokens/:prefix — revoke single token by prefix
   delete '/api/ai-connect/admin/tokens/:prefix' do |prefix|
     auth = AuthMiddleware.require_bearer(request)
     halt 401, auth.to_json if auth[:error]
     halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+
     ok = DB.revoke_token_by_prefix(prefix, revoked_by: auth[:uid])
     halt 404, json_error('not_found') unless ok
     { success: true }.to_json
   end
+
+  # POST /api/ai-connect/admin/tokens/bulk-revoke
+  # body: { "filter": "unused|inactive|all", "days": N (optional) }
+  post '/api/ai-connect/admin/tokens/bulk-revoke' do
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+
+    body = parse_json(request.body.read)
+    filter = body['filter'].to_s
+    days   = body['days']&.to_i
+
+    count = case filter
+    when 'unused'
+      DB.revoke_unused(days: (days && days > 0 ? days : nil), revoked_by: auth[:uid])
+    when 'inactive'
+      DB.revoke_inactive(days: (days && days > 0 ? days : DB::INACTIVE_DAYS), revoked_by: auth[:uid])
+    when 'all'
+      DB.list_tokens(filter: 'active').reduce(0) do |n, row|
+        n + (DB.revoke_token_by_prefix(row['token_prefix'], revoked_by: auth[:uid]) ? 1 : 0)
+      end
+    else
+      halt 422, json_error('invalid_filter', message: "filter must be unused, inactive, or all")
+    end
+
+    { success: true, revoked: count }.to_json
+  end
+
+  # GET /api/ai-connect/admin/users/:uid/tokens[?filter=...]
+  get '/api/ai-connect/admin/users/:uid/tokens' do |uid|
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+
+    filter = params['filter']
+    { tokens: DB.list_tokens_for_user(uid.to_i, filter: filter) }.to_json
+  end
+
+  # ---------------------------------------------------------------------------
+  # User — own-token management (identified by X-Discourse-Uid header,
+  # set by the Discourse proxy on behalf of the logged-in user)
+  # ---------------------------------------------------------------------------
+
+  # GET /api/ai-connect/tokens[?filter=...]
+  get '/api/ai-connect/tokens' do
+    uid = discourse_uid
+    halt 401, json_error('not_authenticated') unless uid
+
+    filter = params['filter']
+    { tokens: DB.list_tokens_for_user(uid, filter: filter) }.to_json
+  end
+
+  # DELETE /api/ai-connect/tokens/:prefix — user revokes one of their own tokens
+  delete '/api/ai-connect/tokens/:prefix' do |prefix|
+    uid = discourse_uid
+    halt 401, json_error('not_authenticated') unless uid
+
+    reg = DB.list_tokens_for_user(uid).find { |r| r['token_prefix'] == prefix }
+    halt 404, json_error('not_found') unless reg
+
+    ok = DB.revoke_token_by_prefix(prefix, revoked_by: uid)
+    halt 404, json_error('not_found') unless ok
+    { success: true }.to_json
+  end
+
+  # POST /api/ai-connect/tokens/bulk-revoke
+  # body: { "filter": "unused|inactive|all" }
+  post '/api/ai-connect/tokens/bulk-revoke' do
+    uid = discourse_uid
+    halt 401, json_error('not_authenticated') unless uid
+
+    body   = parse_json(request.body.read)
+    filter = body['filter'].to_s
+    days   = body['days']&.to_i
+
+    unless %w[unused inactive all].include?(filter)
+      halt 422, json_error('invalid_filter', message: "filter must be unused, inactive, or all")
+    end
+
+    tokens = DB.list_tokens_for_user(uid, filter: filter == 'all' ? 'active' : filter)
+    count  = tokens.reduce(0) do |n, row|
+      n + (DB.revoke_token_by_prefix(row['token_prefix'], revoked_by: uid) ? 1 : 0)
+    end
+
+    { success: true, revoked: count }.to_json
+  end
+
+  # ---------------------------------------------------------------------------
+  # Tools proxy
+  # ---------------------------------------------------------------------------
 
   post '/api/ai-connect/v1/tools/:tool_name' do |tool_name|
     auth = AuthMiddleware.require_bearer(request)
@@ -174,6 +283,10 @@ class DiscourseAiConnect < Sinatra::Base
     { success: !has_error, data: result }.to_json
   end
 
+  # ---------------------------------------------------------------------------
+  # Error handlers
+  # ---------------------------------------------------------------------------
+
   error JSON::ParserError do
     status 400
     json_error('invalid_json', message: env['sinatra.error']&.message)
@@ -188,6 +301,11 @@ class DiscourseAiConnect < Sinatra::Base
   helpers do
     def client_ip
       request.env['HTTP_X_FORWARDED_FOR']&.split(',')&.first&.strip || request.ip || 'unknown'
+    end
+
+    def discourse_uid
+      uid = request.env['HTTP_X_DISCOURSE_UID']&.to_i
+      uid && uid.positive? ? uid : nil
     end
 
     def json_error(code, **extra)

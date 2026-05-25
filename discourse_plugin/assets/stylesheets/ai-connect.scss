@@ -15,3 +15,95 @@
     margin-left: 8px;
   }
 }
+
+// ── Token management page (/u/:username/preferences/ai-tokens) ──────────────
+.ai-connect-tokens {
+  max-width: 960px;
+
+  h2 {
+    margin-bottom: 0.4em;
+  }
+
+  &__desc {
+    color: var(--primary-medium);
+    margin-bottom: 1.2em;
+  }
+
+  &__filters {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 1em;
+  }
+
+  &__bulk-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 1.4em;
+  }
+
+  &__loading,
+  &__error,
+  &__empty {
+    color: var(--primary-medium);
+    font-style: italic;
+    padding: 1em 0;
+  }
+
+  &__table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9em;
+
+    th {
+      text-align: left;
+      padding: 8px 10px;
+      border-bottom: 2px solid var(--primary-low);
+      white-space: nowrap;
+      color: var(--primary-medium);
+    }
+
+    td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--primary-low);
+      vertical-align: middle;
+    }
+  }
+
+  &__prefix code {
+    font-size: 0.85em;
+    background: var(--primary-very-low);
+    padding: 2px 5px;
+    border-radius: 3px;
+  }
+
+  &__ua {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  // Row tinting by state
+  &__row--revoked td  { opacity: 0.55; }
+  &__row--expired td  { opacity: 0.65; }
+  &__row--inactive td { background: var(--highlight-low, #fff9e6); }
+
+  // State badges
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.78em;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+
+  .badge--active   { background: #e8f5e9; color: #2e7d32; }
+  .badge--unused   { background: #fff9c4; color: #827717; }
+  .badge--inactive { background: #ffe0b2; color: #e65100; }
+  .badge--expired  { background: #eeeeee; color: #555; }
+  .badge--revoked  { background: #ffebee; color: #b71c1c; }
+}

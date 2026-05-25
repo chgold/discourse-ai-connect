@@ -1,0 +1,93 @@
+{{! User AI-Token Management — /u/:username/preferences/ai-tokens }}
+<div class="ai-connect-tokens">
+  <h2>{{i18n "ai_connect.tokens_page_title"}}</h2>
+  <p class="ai-connect-tokens__desc">{{i18n "ai_connect.tokens_description"}}</p>
+
+  {{! Filters }}
+  <div class="ai-connect-tokens__filters">
+    {{#each this.filters as |f|}}
+      <button
+        type="button"
+        class="btn btn-default {{if (eq this.activeFilter f.key) "btn-primary"}}"
+        {{on "click" (fn this.setFilter f.key)}}
+      >{{f.label}}</button>
+    {{/each}}
+  </div>
+
+  {{! Bulk actions }}
+  <div class="ai-connect-tokens__bulk-actions">
+    <DButton
+      @action={{this.revokeAllUnused}}
+      @label="ai_connect.revoke_all_unused"
+      @icon="times"
+      class="btn-warning"
+    />
+    <DButton
+      @action={{this.revokeAllInactive}}
+      @label="ai_connect.revoke_all_inactive"
+      @icon="times"
+      class="btn-warning"
+    />
+    <DButton
+      @action={{this.revokeAllDanger}}
+      @label="ai_connect.revoke_all_danger"
+      @icon="trash-alt"
+      class="btn-danger"
+    />
+  </div>
+
+  {{! Loading / error states }}
+  {{#if this.isLoading}}
+    <p class="ai-connect-tokens__loading">{{i18n "ai_connect.loading"}}</p>
+  {{else if this.loadError}}
+    <p class="ai-connect-tokens__error">{{i18n "ai_connect.error_loading"}}</p>
+  {{else if (eq this.tokens.length 0)}}
+    <p class="ai-connect-tokens__empty">{{i18n "ai_connect.no_tokens"}}</p>
+  {{else}}
+    <table class="ai-connect-tokens__table">
+      <thead>
+        <tr>
+          <th>{{i18n "ai_connect.col_prefix"}}</th>
+          <th>{{i18n "ai_connect.col_source"}}</th>
+          <th>{{i18n "ai_connect.col_scope"}}</th>
+          <th>{{i18n "ai_connect.col_issued"}}</th>
+          <th>{{i18n "ai_connect.col_last_used"}}</th>
+          <th>{{i18n "ai_connect.col_last_ip"}}</th>
+          <th>{{i18n "ai_connect.col_last_ua"}}</th>
+          <th>{{i18n "ai_connect.col_state"}}</th>
+          <th>{{i18n "ai_connect.col_actions"}}</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{#each this.tokens as |tok|}}
+          <tr class="ai-connect-tokens__row ai-connect-tokens__row--{{tok.state}}">
+            <td class="ai-connect-tokens__prefix">
+              <code title={{tok.token_prefix}}>{{tok.token_prefix}}…</code>
+            </td>
+            <td>{{tok.source}}</td>
+            <td>{{tok.scope}}</td>
+            <td title={{tok.issued_at}}>{{tok.issued_relative}}</td>
+            <td title={{tok.last_used_at}}>{{tok.last_used_relative}}</td>
+            <td>{{or tok.last_used_ip "—"}}</td>
+            <td class="ai-connect-tokens__ua" title={{tok.last_used_ua}}>
+              {{tok.ua_short}}
+            </td>
+            <td>
+              <span class="badge badge--{{tok.state}}">{{tok.state_label}}</span>
+            </td>
+            <td>
+              {{#unless (eq tok.state "revoked")}}
+                <DButton
+                  @action={{fn this.revokeToken tok}}
+                  @label="ai_connect.revoke"
+                  @icon="times"
+                  class="btn-danger btn-small"
+                />
+              {{/unless}}
+            </td>
+          </tr>
+        {{/each}}
+      </tbody>
+    </table>
+  {{/if}}
+</div>
