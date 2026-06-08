@@ -33,6 +33,7 @@ class DiscourseAiConnect < Sinatra::Base
   set :show_exceptions, false
   set :raise_errors, false
   set :dump_errors, false
+  set :host_authorization, permitted_hosts: []
 
   def self.allowed_origins
     raw = ENV.fetch('ALLOWED_ORIGINS', '')
@@ -93,7 +94,8 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   get '/' do
-    redirect '/ai-connect'
+    base = ENV.fetch('DISCOURSE_AI_CONNECT_URL', '').sub(%r{/+\z}, '')
+    redirect "#{base}/ai-connect"
   end
 
   get '/health' do
@@ -211,6 +213,50 @@ class DiscourseAiConnect < Sinatra::Base
     { tokens: DB.list_tokens_for_user(uid.to_i, filter: filter) }.to_json
   end
 
+  post '/api/ai-connect/admin/users/:uid/block' do |uid|
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+
+    DB.block_user(uid.to_i, auth[:uid])
+    { success: true, user_id: uid.to_i, blocked: true }.to_json
+  end
+
+  delete '/api/ai-connect/admin/users/:uid/block' do |uid|
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+
+    DB.unblock_user(uid.to_i)
+    { success: true, user_id: uid.to_i, blocked: false }.to_json
+  end
+
+  post '/api/ai-connect/admin/users/:uid/unblock' do |uid|
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+
+    DB.unblock_user(uid.to_i)
+    { success: true, user_id: uid.to_i, blocked: false }.to_json
+  end
+
+  get '/api/ai-connect/admin/users/:uid/blocked' do |uid|
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+
+    { user_id: uid.to_i, blocked: DB.user_blocked?(uid.to_i) }.to_json
+  end
+
+  post '/api/ai-connect/admin/emergency-revoke-all' do
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+
+    count = DB.revoke_all_tokens(revoked_by: auth[:uid])
+    { success: true, revoked: count }.to_json
+  end
+
   # ---------------------------------------------------------------------------
   # User — own-token management (identified by X-Discourse-Uid header,
   # set by the Discourse proxy on behalf of the logged-in user)
@@ -264,9 +310,41 @@ class DiscourseAiConnect < Sinatra::Base
   # Tools proxy
   # ---------------------------------------------------------------------------
 
+  get '/api/ai-connect/v1/tools/:tool_name' do |tool_name|
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+
+    halt 403, json_error('user_blocked', message: 'User is blocked from API access') if DB.user_blocked?(auth[:uid])
+
+    required_scope = settings.module_registry.tool_required_scope(tool_name)
+    halt 404, json_error('tool_not_found') if required_scope.nil?
+    halt 405, json_error('method_not_allowed', message: 'This tool requires POST') unless required_scope == 'read'
+
+    rate_check = RateLimitMiddleware.check_tool(auth[:token])
+    halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
+
+    excluded = %w[tool_name splat captures]
+    args = if params['arguments']
+      begin; JSON.parse(params['arguments']); rescue JSON::ParserError; {}; end
+    else
+      params.to_h.reject { |k, _| excluded.include?(k.to_s) }
+    end
+
+    result = ToolsController.execute(tool_name, args, auth[:uid], auth[:scope])
+    has_error = result.is_a?(Hash) && result.key?(:error)
+    if has_error
+      status 404 if result[:error] == 'tool_not_found'
+      status 403 if result[:error] == 'insufficient_scope'
+      status 400 if result[:error] == 'invalid_params'
+    end
+    { success: !has_error, data: result }.to_json
+  end
+
   post '/api/ai-connect/v1/tools/:tool_name' do |tool_name|
     auth = AuthMiddleware.require_bearer(request)
     halt 401, auth.to_json if auth[:error]
+
+    halt 403, json_error('user_blocked', message: 'User is blocked from API access') if DB.user_blocked?(auth[:uid])
 
     rate_check = RateLimitMiddleware.check_tool(auth[:token])
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]

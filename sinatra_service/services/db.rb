@@ -114,6 +114,14 @@ module DB
         ON ai_connect_token_registry(revoked_at, expires_at);
     SQL
 
+    conn.exec(<<~SQL)
+      CREATE TABLE IF NOT EXISTS ai_blocked_users (
+        user_id BIGINT PRIMARY KEY,
+        blocked_at TIMESTAMP DEFAULT NOW(),
+        blocked_by BIGINT
+      );
+    SQL
+
     seeded_clients = [
       { id: 'webmcp-master',     name: 'WebMCP Master',     scopes: 'read write delete manage_users' },
       { id: 'claude',            name: 'claude',            scopes: 'read write delete' },
@@ -122,7 +130,7 @@ module DB
       { id: 'grok',              name: 'grok',              scopes: 'read write delete' },
       { id: 'copilot',           name: 'copilot',           scopes: 'read write delete' },
       { id: 'perplexity',        name: 'perplexity',        scopes: 'read write delete' },
-      { id: 'metaai',            name: 'metaai',            scopes: 'read write delete' },
+      { id: 'meta-ai',           name: 'meta-ai',           scopes: 'read write delete' },
       { id: 'deepseek',          name: 'deepseek',          scopes: 'read write delete' },
       { id: 'ai-agent-default',  name: 'ai-agent-default',  scopes: 'read write delete' },
     ]
@@ -134,9 +142,21 @@ module DB
     end
   end
 
+  # Normalize client_id per protocol spec: claude / claude-ai / claude_ai are equivalent.
+  def self.normalize_client_id(client_id)
+    return nil if client_id.nil?
+    client_id.to_s.downcase.gsub(/[-_]ai\z/, '').gsub(/[-_]/, '')
+  end
+
   def self.get_client(client_id)
     result = conn.exec_params("SELECT * FROM ai_clients WHERE client_id=$1", [client_id])
-    result.first
+    row = result.first
+    return row if row
+
+    normalized = normalize_client_id(client_id)
+    return nil if normalized.nil? || normalized.empty?
+    all = conn.exec("SELECT * FROM ai_clients").to_a
+    all.find { |r| normalize_client_id(r['client_id']) == normalized }
   end
 
   def self.list_clients
@@ -426,6 +446,35 @@ module DB
       count += 1
     end
     count
+  end
+
+  def self.revoke_all_tokens(revoked_by: nil)
+    result = conn.exec_params(
+      "UPDATE ai_connect_token_registry SET revoked_at = NOW(), revoked_by = $1 WHERE revoked_at IS NULL RETURNING token_prefix",
+      [revoked_by]
+    )
+    result.each { |row| cascade_ai_tokens_by_prefix(row['token_prefix']) }
+    result.ntuples
+  end
+
+  # ---------------------------------------------------------------------------
+  # User blocking
+  # ---------------------------------------------------------------------------
+
+  def self.block_user(uid, admin_uid = nil)
+    conn.exec_params(
+      "INSERT INTO ai_blocked_users (user_id, blocked_at, blocked_by) VALUES ($1, NOW(), $2) ON CONFLICT (user_id) DO UPDATE SET blocked_at = NOW(), blocked_by = $2",
+      [uid, admin_uid]
+    )
+  end
+
+  def self.unblock_user(uid)
+    conn.exec_params("DELETE FROM ai_blocked_users WHERE user_id = $1", [uid])
+  end
+
+  def self.user_blocked?(uid)
+    result = conn.exec_params("SELECT 1 FROM ai_blocked_users WHERE user_id = $1", [uid])
+    result.ntuples > 0
   end
 
   # ---------------------------------------------------------------------------

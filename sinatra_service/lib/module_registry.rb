@@ -38,6 +38,18 @@ module AiConnect
       target.execute_tool(short_name, params, context)
     end
 
+    def tool_required_scope(tool_name)
+      parts = tool_name.to_s.split('.', 2)
+      return nil unless parts.length == 2
+
+      namespace, short_name = parts
+      candidates = modules_for_namespace(namespace)
+      return nil if candidates.empty?
+
+      target = candidates.find { |m| m.tools.key?(short_name) }
+      target&.tools&.dig(short_name, :required_scope)
+    end
+
     def self.on_init(&block)
       @init_callbacks ||= []
       @init_callbacks << block
