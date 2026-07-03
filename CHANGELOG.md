@@ -4,6 +4,11 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-07-03
+
+### Changed
+- **Servio Protocol:** Token prefixes aligned to unified standard (`dsc_` → `xfa_`, `dscr_` → `xfr_`).
+
 ## [1.0.0] - 2026-05-10
 
 ### Added

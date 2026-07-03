@@ -106,6 +106,27 @@ class DiscourseAiConnect < Sinatra::Base
     ManifestController.get(registry: settings.module_registry).to_json
   end
 
+  get '/api/aiconnect-manifest' do
+    ManifestController.get(registry: settings.module_registry).to_json
+  end
+
+  post '/api/aiconnect-oauth' do
+    redirect to('/api/ai-connect/token'), 307
+  end
+
+  get '/api/aiconnect-tools' do
+    tool_name = params['name'] || params['tool']
+    halt 400, json_error('missing_tool_name') unless tool_name
+    redirect to("/api/ai-connect/v1/tools/#{tool_name}?#{request.query_string}"), 307
+  end
+
+  post '/api/aiconnect-tools' do
+    tool_name = params['name'] || params['tool'] || (JSON.parse(request.body.read)['name'] rescue nil)
+    request.body.rewind
+    halt 400, json_error('missing_tool_name') unless tool_name
+    redirect to("/api/ai-connect/v1/tools/#{tool_name}?#{request.query_string}"), 307
+  end
+
   get '/ai-connect' do
     content_type :html
     InfoController.page(request.env)
@@ -146,9 +167,40 @@ class DiscourseAiConnect < Sinatra::Base
   post '/api/ai-connect/generate-token' do
     uid = request.env['HTTP_X_DISCOURSE_UID']&.to_i
     halt 401, json_error('not_authenticated') unless uid && uid.positive?
-    tokens = DB.save_tokens('ai-agent-default', uid, 'read write',
+
+    body = JSON.parse(request.body.read) rescue {}
+    scope = body['scope'].to_s.strip.empty? ? 'read write' : body['scope'].to_s
+    client_id = body['client_id'].to_s.strip.empty? ? 'ai-agent-default' : body['client_id'].to_s
+
+    tokens = DB.save_tokens(client_id, uid, scope,
                             source: 'generator', ip_address: client_ip)
-    { access_token: tokens[:access], token_type: 'Bearer', expires_in: 3600 }.to_json
+    {
+      access_token: tokens[:access],
+      refresh_token: tokens[:refresh],
+      token_type: 'Bearer',
+      expires_in: 3600,
+      scope: scope
+    }.to_json
+  end
+
+  post '/api/ai-connect/generate-prompt' do
+    uid = request.env['HTTP_X_DISCOURSE_UID']&.to_i
+    halt 401, json_error('not_authenticated') unless uid && uid.positive?
+
+    body = JSON.parse(request.body.read) rescue {}
+    scope = body['scope'].to_s.strip.empty? ? 'read write' : body['scope'].to_s
+
+    tokens = DB.save_tokens('ai-agent-default', uid, scope,
+                            source: 'generator', ip_address: client_ip)
+    site_name = ENV.fetch('DISCOURSE_SITE_NAME', 'Discourse Forum')
+    prompt = InfoController.build_prompt(tokens[:access], tokens[:refresh], site_name)
+    {
+      access_token: tokens[:access],
+      refresh_token: tokens[:refresh],
+      expires_in: 3600,
+      refresh_token_expires_in: 2592000,
+      prompt: prompt
+    }.to_json
   end
 
   # ---------------------------------------------------------------------------

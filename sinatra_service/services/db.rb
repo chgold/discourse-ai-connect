@@ -188,8 +188,8 @@ module DB
   end
 
   def self.save_tokens(client_id, uid, scope, source: 'oauth', ip_address: nil)
-    at = "dsc_#{SecureRandom.hex(32)}"
-    rt = "dscr_#{SecureRandom.hex(32)}"
+    at = "xfa_#{SecureRandom.hex(32)}"
+    rt = "xfr_#{SecureRandom.hex(32)}"
     now = Time.now.to_i
     conn.exec_params(
       "INSERT INTO ai_tokens (token,token_type,client_id,uid,scope,expires_at) VALUES ($1,'access',$2,$3,$4,$5)",
