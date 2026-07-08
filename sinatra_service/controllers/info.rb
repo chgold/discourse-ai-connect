@@ -32,10 +32,11 @@ module InfoController
     lines = []
     lines << "You have access to #{site_name} via AI Connect."
     lines << ""
-    lines << "## MCP (Recommended — Claude Desktop)"
-    lines << "Call webmcp_addSite with these parameters:"
+     lines << "## MCP (Recommended — Claude Desktop)"
+     lines << "Call servio_addSite (or webmcp_addSite for backward compat) with these parameters:"
     lines << "  name:          \"#{site_name_mcp}\""
     lines << "  manifest_url:  \"#{manifest}\""
+    lines << "  token_url:     \"#{token_url}\""
     lines << "  token:         \"Bearer #{access_token}\""
     lines << "  refresh_token: \"#{refresh_token}\""
     lines << ""
