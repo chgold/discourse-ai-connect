@@ -14,7 +14,7 @@ require_relative 'lib/input_validator'
 require_relative 'lib/module_base'
 require_relative 'lib/module_registry'
 require_relative 'lib/modules/core_module'
-require_relative 'lib/modules/pro_module'
+require_relative 'lib/pro_loader'
 require_relative 'controllers/manifest'
 require_relative 'controllers/oauth'
 require_relative 'controllers/tools'
@@ -48,7 +48,7 @@ class DiscourseAiConnect < Sinatra::Base
   configure do
     registry = AiConnect::ModuleRegistry.new
     registry.register(AiConnect::Modules::CoreModule.new, key: 'core')
-    registry.register(AiConnect::Modules::ProModule.new, key: 'pro')
+    AiConnect::ProLoader.load(registry)
     AiConnect::ModuleRegistry.run_init_callbacks(registry)
     set :module_registry, registry
   end

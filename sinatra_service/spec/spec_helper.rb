@@ -7,6 +7,7 @@ ENV['DB_PASSWORD'] ||= ''
 ENV['DISCOURSE_STUB_MODE'] = '1'
 ENV['DEV_ALLOW_UID_PARAM'] = '1'
 ENV['ALLOWED_ORIGINS'] = 'http://test.local,http://localhost:8086'
+ENV['AICONNECT_EDITION'] = 'pro'
 
 require 'simplecov'
 SimpleCov.start do
