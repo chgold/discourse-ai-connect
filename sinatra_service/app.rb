@@ -111,20 +111,20 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   post '/api/aiconnect-oauth' do
-    redirect to('/api/ai-connect/token'), 307
+    alias_redirect('/api/ai-connect/token', 307)
   end
 
   get '/api/aiconnect-tools' do
     tool_name = params['name'] || params['tool']
     halt 400, json_error('missing_tool_name') unless tool_name
-    redirect to("/api/ai-connect/v1/tools/#{tool_name}?#{request.query_string}"), 307
+    alias_redirect("/api/ai-connect/v1/tools/#{tool_name}?#{request.query_string}", 307)
   end
 
   post '/api/aiconnect-tools' do
     tool_name = params['name'] || params['tool'] || (JSON.parse(request.body.read)['name'] rescue nil)
     request.body.rewind
     halt 400, json_error('missing_tool_name') unless tool_name
-    redirect to("/api/ai-connect/v1/tools/#{tool_name}?#{request.query_string}"), 307
+    alias_redirect("/api/ai-connect/v1/tools/#{tool_name}?#{request.query_string}", 307)
   end
 
   get '/ai-connect' do
@@ -154,7 +154,10 @@ class DiscourseAiConnect < Sinatra::Base
   post '/api/ai-connect/token' do
     rate_check = RateLimitMiddleware.check_token_endpoint(client_ip)
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
-    OAuthController.token(params, ip: client_ip).to_json
+    # Sinatra params omit JSON bodies (only form-encoded); agents POST JSON here.
+    json_body = parse_json(request.body.read)
+    request.body.rewind
+    OAuthController.token(json_body.merge(params), ip: client_ip).to_json
   end
 
   post '/api/ai-connect/revoke' do
@@ -448,6 +451,13 @@ class DiscourseAiConnect < Sinatra::Base
     rescue JSON::ParserError => e
       LOGGER.warn("Invalid JSON body: #{e.message}")
       {}
+    end
+
+    # Redirect Location must carry the public base (e.g. .../discourse); Sinatra's
+    # to() builds an app-root path that drops the reverse-proxy prefix -> 404.
+    def alias_redirect(path, code)
+      base = ENV.fetch('DISCOURSE_AI_CONNECT_URL', '').sub(%r{/+\z}, '')
+      redirect(base.empty? ? to(path) : "#{base}#{path}", code)
     end
   end
 

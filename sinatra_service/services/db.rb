@@ -30,12 +30,17 @@ module DB
   end
 
   def self.conn
-    @conn ||= begin
+    # A libpq connection is not thread-safe; Puma serves on multiple threads, so
+    # sharing one connection corrupts the protocol (SSL "bad record mac"). Keep
+    # one connection per thread, reconnecting if it was closed/broken.
+    c = Thread.current[:ai_connect_pg]
+    if c.nil? || c.finished?
       LOGGER.info("Connecting to PostgreSQL #{config[:host]}:#{config[:port]}/#{config[:dbname]} as #{config[:user]}")
       c = PG.connect(config)
       c.exec("SET client_min_messages=WARNING") rescue nil
-      c
+      Thread.current[:ai_connect_pg] = c
     end
+    c
   rescue PG::Error => e
     LOGGER.error("DB connection failed: #{e.message}")
     raise
