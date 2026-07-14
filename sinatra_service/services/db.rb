@@ -127,6 +127,14 @@ module DB
       );
     SQL
 
+    conn.exec(<<~SQL)
+      CREATE TABLE IF NOT EXISTS ai_connect_meta (
+        key_name VARCHAR(100) PRIMARY KEY,
+        value TEXT,
+        updated_at BIGINT NOT NULL
+      );
+    SQL
+
     seeded_clients = [
       { id: 'webmcp-master',     name: 'WebMCP Master',     scopes: 'read write delete manage_users' },
       { id: 'claude',            name: 'claude',            scopes: 'read write delete' },

@@ -29,7 +29,13 @@ module AiConnect
     end
 
     def self.edition
-      (ENV['AICONNECT_EDITION'] || 'free').downcase
+      env = (ENV['AICONNECT_EDITION'] || '').downcase
+      return env unless env.empty?
+
+      require_relative 'license_client'
+      AiConnect::LicenseClient.resolve_edition
+    rescue StandardError
+      'free'
     end
   end
 end
