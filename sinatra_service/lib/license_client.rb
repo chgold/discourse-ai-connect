@@ -15,9 +15,19 @@ require_relative '../services/db'
 module AiConnect
   class LicenseClient
     API_URL       = 'https://goldnat.ai/api/licenses/public/validate'
+    EXPECTED_SLUG = 'discourse-plugin'
     CACHE_KEY     = 'license_status'
     CACHE_TTL_MS  = 7 * 24 * 60 * 60 * 1000
     VALID_STATUSES = %w[valid valid_no_updates].freeze
+
+    # Require matching plugin_slug so another plugin's license can't unlock this one.
+    # error_cached is the fail-open network-blip verdict (no slug present) -> honored.
+    def self.grants_pro(data)
+      return false unless data
+      return true if data['status'] == 'error_cached'
+
+      VALID_STATUSES.include?(data['status']) && data['plugin_slug'] == EXPECTED_SLUG
+    end
 
     def self.resolve_edition
       key = (ENV['AICONNECT_LICENSE_KEY'] || '').strip
@@ -25,19 +35,19 @@ module AiConnect
 
       cached = read_cache
       if cached && cached['checked_at'] && (now_ms - cached['checked_at'].to_i) < CACHE_TTL_MS
-        return VALID_STATUSES.include?(cached['status']) ? 'pro' : 'free'
+        return grants_pro(cached) ? 'pro' : 'free'
       end
 
       resp = call_server(key)
       if resp.nil?
-        return VALID_STATUSES.include?(cached['status']) ? 'pro' : 'free' if cached
+        return grants_pro(cached) ? 'pro' : 'free' if cached
 
         write_cache('valid' => true, 'status' => 'error_cached')
         return 'pro'
       end
 
       write_cache(resp)
-      VALID_STATUSES.include?(resp['status']) ? 'pro' : 'free'
+      grants_pro(resp) ? 'pro' : 'free'
     end
 
     def self.read_cache
