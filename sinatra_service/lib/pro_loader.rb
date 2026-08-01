@@ -14,7 +14,7 @@ module AiConnect
     )
 
     def self.load(registry)
-      return false unless edition == 'pro'
+      return false if bundles.empty?
 
       unless defined?(AiConnect::Modules::ProModule)
         return false unless File.file?(PRO_MODULE_PATH)
@@ -26,6 +26,17 @@ module AiConnect
 
       registry.register(AiConnect::Modules::ProModule.new, key: 'pro')
       true
+    end
+
+    # Bundles granted by the current license (BUNDLES-LICENSE-SPEC v1.0).
+    # ['*'] for legacy edition='pro' (grants everything), [] for free.
+    def self.bundles
+      edition == 'pro' ? ['*'] : []
+    end
+
+    def self.has_bundle?(bundle)
+      b = bundles
+      b.include?('*') || b.include?(bundle)
     end
 
     def self.edition
