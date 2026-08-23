@@ -18,7 +18,40 @@ module InfoController
     { name: 'discourse.likePost',     body: '{"post_id":PID}',                                   hint: 'Like a post (Pro)' }
   ]
 
-  def self.build_prompt(access_token, refresh_token, site_name = 'Discourse Forum')
+  # Summarises a tool's parameters from its input schema, for the agent prompt.
+  def self.build_schema_hint(tool, max_optional = 3)
+    schema = tool[:input_schema] || tool['input_schema'] || {}
+    properties = schema[:properties] || schema['properties'] || {}
+    return 'no arguments' if properties.nil? || properties.empty?
+
+    required = (schema[:required] || schema['required'] || []).map(&:to_s)
+    req = []
+    opt = []
+
+    properties.each do |name, spec|
+      spec = spec.is_a?(Hash) ? spec : {}
+      type = spec[:type] || spec['type'] || 'string'
+      part = "#{name}=#{type}"
+
+      if required.include?(name.to_s)
+        req << part
+        next
+      end
+
+      default = spec.key?(:default) ? spec[:default] : spec['default']
+      part += " (default #{default})" unless default.nil?
+      opt << part
+    end
+
+    req[-1] += ' [required]' unless req.empty?
+
+    shown = opt.first(max_optional)
+    hint = (req + shown).join(', ')
+    hint += ", +#{opt.length - shown.length} more" if opt.length > shown.length
+    hint
+  end
+
+  def self.build_prompt(access_token, refresh_token, site_name = 'Discourse Forum', registry = nil)
     base = BASE_URL
     uri  = URI.parse(base) rescue nil
     host_part = uri&.host || 'discourse'
@@ -43,7 +76,19 @@ module InfoController
     lines << "IMPORTANT: Paste BOTH token and refresh_token — otherwise the connection will stop working after 1 hour."
     lines << ""
     lines << "After adding the site, call these tools by EXACT name (do not search — use directly):"
-    (READ_TOOLS + WRITE_TOOLS).each do |t|
+    curated = (READ_TOOLS + WRITE_TOOLS).each_with_object({}) { |t, h| h[t[:name]] = t[:hint] }
+
+    listed =
+      begin
+        registry.all_tools(scope: 'read write delete admin').map do |tool|
+          name = tool[:name] || tool['name']
+          { name: name, hint: curated[name] || build_schema_hint(tool) }
+        end
+      rescue StandardError
+        (READ_TOOLS + WRITE_TOOLS).map { |t| { name: t[:name], hint: t[:hint] } }
+      end
+
+    listed.each do |t|
       mcp = "#{site_key}_#{t[:name].sub('.', '_')}"
       lines << "  #{mcp.ljust(50)}<- #{t[:hint]}"
     end

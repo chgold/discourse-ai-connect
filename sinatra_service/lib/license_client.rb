@@ -15,9 +15,9 @@ require_relative '../services/db'
 module AiConnect
   class LicenseClient
     API_URL       = 'https://goldnat.ai/api/licenses/public/validate'
-    EXPECTED_SLUG = 'discourse-plugin'
+    EXPECTED_SLUG = 'discourse-moderator-ai-connect'
     CACHE_KEY     = 'license_status'
-    CACHE_TTL_MS  = 7 * 24 * 60 * 60 * 1000
+    CACHE_TTL_MS  = 24 * 60 * 60 * 1000
     VALID_STATUSES = %w[valid valid_no_updates].freeze
 
     # Require matching plugin_slug so another plugin's license can't unlock this one.

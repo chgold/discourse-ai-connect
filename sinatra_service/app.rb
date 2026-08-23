@@ -14,6 +14,7 @@ require_relative 'lib/input_validator'
 require_relative 'lib/module_base'
 require_relative 'lib/module_registry'
 require_relative 'lib/modules/core_module'
+require_relative 'lib/modules/content_module'
 require_relative 'lib/pro_loader'
 require_relative 'controllers/manifest'
 require_relative 'controllers/oauth'
@@ -48,6 +49,7 @@ class DiscourseAiConnect < Sinatra::Base
   configure do
     registry = AiConnect::ModuleRegistry.new
     registry.register(AiConnect::Modules::CoreModule.new, key: 'core')
+    registry.register(AiConnect::Modules::ContentModule.new, key: 'content')
     AiConnect::ProLoader.load(registry)
     AiConnect::ModuleRegistry.run_init_callbacks(registry)
     set :module_registry, registry
@@ -196,7 +198,7 @@ class DiscourseAiConnect < Sinatra::Base
     tokens = DB.save_tokens('ai-agent-default', uid, scope,
                             source: 'generator', ip_address: client_ip)
     site_name = ENV.fetch('DISCOURSE_SITE_NAME', 'Discourse Forum')
-    prompt = InfoController.build_prompt(tokens[:access], tokens[:refresh], site_name)
+    prompt = InfoController.build_prompt(tokens[:access], tokens[:refresh], site_name, settings.module_registry)
     {
       access_token: tokens[:access],
       refresh_token: tokens[:refresh],
