@@ -2,7 +2,7 @@
 
 # name: discourse-ai-connect
 # about: Connect AI agents (Claude, ChatGPT, Gemini, etc.) to your Discourse forum via the WebMCP / GACP protocol.
-# version: 1.2.1
+# version: 1.2.2
 # authors: Chen Gold-Tovi (chgold)
 # url: https://github.com/chgold/discourse-ai-connect
 # required_version: 2.7.0
