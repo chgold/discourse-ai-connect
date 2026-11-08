@@ -49,9 +49,50 @@ module AiConnect
           required_scope: 'read',
           validation_schema: { required: {}, optional: { category_id: :integer, page: :integer } }
         }
+
+        register_tool :getForumStats, {
+          description: 'Return community stats — currently `unanswered_count`. Definition: topic with posts_count == 1 (only the opening post, no replies) AND not deleted/hidden. from/to/timezone params are accepted for uniform brief-collector shape but the count is a live snapshot at query time.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              from:     { type: 'string' },
+              to:       { type: 'string' },
+              timezone: { type: 'string' }
+            }
+          },
+          required_scope: 'read',
+          validation_schema: { required: {}, optional: { from: :string, to: :string, timezone: :string } }
+        }
+      end
+
+      def brief_metrics
+        [{
+          key: 'community.unanswered.count',
+          tool: "#{module_name}.getForumStats",
+          args: { from: '{{periodStart}}', to: '{{periodEnd}}', timezone: '{{timezone}}' },
+          valuePath: 'unanswered_count',
+          granularity: 'day'
+        }]
       end
 
       private
+
+      def execute_getForumStats(params, _context)
+        result = DiscourseApi.get('/latest.json?no_definitions=true')
+        topics = result.dig('topic_list', 'topics') || []
+        unanswered = topics.count { |t| (t['posts_count'] || 0).to_i == 1 }
+        {
+          unanswered_count: unanswered,
+          definition: {
+            posts_count: 1,
+            note: 'Topic with posts_count=1 (opening post only, no replies) in /latest.json. Snapshot at query time — not filtered by from/to.'
+          },
+          from:     params[:from],
+          to:       params[:to],
+          timezone: params[:timezone]
+        }
+      end
+
 
       def execute_searchTopics(params, _context)
         result = DiscourseApi.get("/search.json?q=#{URI.encode_www_form_component(params[:query])}&page=#{params[:page] || 1}")

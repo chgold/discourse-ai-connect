@@ -5,10 +5,10 @@ module ManifestController
 
   def self.get(registry: nil, scope: 'read write')
     registry ||= DiscourseAiConnect.settings.module_registry
-    {
+    payload = {
       schema_version:  '1.0',
       name:            'discourse-plugin',
-      version:         '1.2.0',
+      version:         '1.2.1',
       description:     'AI Connect for Discourse — search, read and participate in community discussions via AI agents',
       api_version:     'v1',
       capabilities:    { tools: true, resources: false, prompts: false },
@@ -26,5 +26,18 @@ module ManifestController
       },
       tools: registry.all_tools(scope: scope),
     }
+
+    if registry.respond_to?(:brief_metrics)
+      metrics = registry.brief_metrics
+      lists = registry.respond_to?(:brief_lists) ? registry.brief_lists : []
+      if !metrics.empty? || !lists.empty?
+        brief = {}
+        brief[:metrics] = metrics unless metrics.empty?
+        brief[:lists] = lists unless lists.empty?
+        payload[:brief] = brief
+      end
+    end
+
+    payload
   end
 end
