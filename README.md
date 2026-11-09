@@ -105,6 +105,17 @@ Then go to **Admin → Settings → Plugins** and configure:
 
 AI Connect uses **OAuth2 Authorization Code Grant with PKCE** (RFC 7636). PKCE is **required** — clients without `code_challenge` / `code_verifier` are rejected.
 
+### Endpoints
+
+| Method | Path                         | Auth                      | Purpose                                              |
+|--------|------------------------------|---------------------------|------------------------------------------------------|
+| GET    | `/api/ai-connect/manifest`   | none                      | Servio manifest (`auth.token_url`, `auth.revocation_url`) |
+| GET    | `/oauth/authorize`           | Discourse session         | PKCE consent screen                                  |
+| POST   | `/api/ai-connect/token`      | none (PKCE / refresh)     | `authorization_code` and `refresh_token` grants      |
+| POST   | `/api/ai-connect/revoke`     | none (token possession)   | RFC 7009 revocation: `token` (+ optional `token_type_hint`), form or JSON; revokes the whole pair; always `200` except `400 invalid_request` when `token` is missing |
+| GET/POST | `/api/ai-connect/v1/tools/:name` | Bearer access token  | Tool execution                                       |
+| GET    | `/health`                    | none                      | Health check                                         |
+
 ### Flow
 
 ```

@@ -24,7 +24,7 @@ require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
 class DiscourseAiConnect < Sinatra::Base
-  PLUGIN_VERSION = '1.2.0'
+  PLUGIN_VERSION = '1.2.3'
 
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DiscourseAiConnect'
@@ -162,11 +162,22 @@ class DiscourseAiConnect < Sinatra::Base
     OAuthController.token(json_body.merge(params), ip: client_ip).to_json
   end
 
+  # RFC 7009 token revocation (Servio SPEC §5.2). Deliberately unauthenticated:
+  # possession of the token is the authorisation (public PKCE clients). Accepts
+  # form-urlencoded and JSON. 200 for any well-formed request, including unknown
+  # or already-revoked tokens, so the endpoint cannot be used to probe tokens.
   post '/api/ai-connect/revoke' do
-    token = request.env['HTTP_AUTHORIZATION']&.sub(/^Bearer /, '')
-    revoker = request.env['HTTP_X_DISCOURSE_UID']&.to_i
-    DB.revoke_token(token, revoked_by: revoker) if token
-    { success: true }.to_json
+    json_body = request.media_type == 'application/json' ? parse_json(request.body.read) : {}
+    request.body.rewind
+    input = json_body.is_a?(Hash) ? json_body.merge(params) : params
+    token = input['token'].to_s.strip
+    halt 400, json_error('invalid_request', error_description: 'token is required') if token.empty?
+
+    hint = input['token_type_hint'].is_a?(String) ? input['token_type_hint'] : nil
+    found = DB.revoke_pair(token, hint: hint)
+    # Audit trail: never log the token value — only an 8-char prefix.
+    LOGGER.info("oauth.revoke prefix=#{token[0, 8]}... found=#{found} hint=#{hint || '-'}")
+    { revoked: true }.to_json
   end
 
   post '/api/ai-connect/generate-token' do

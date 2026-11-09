@@ -4,6 +4,18 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3] - 2026-11-09
+
+### Security
+- **RFC 7009 token revocation** (`POST /api/ai-connect/revoke`, Servio SPEC §5.2):
+  now reads `token` (+ optional `token_type_hint`) from a form-urlencoded or JSON
+  body instead of the `Authorization` header, needs no authentication, and
+  revokes the **whole pair** whether the access or the refresh token is sent
+  (previously revoking a refresh token left its access token valid). Always
+  returns `200 {"revoked":true}` (no token probing); `400 invalid_request` only
+  when `token` is missing. The token registry (admin list / My Tokens) is
+  updated in the same transaction. Advertised as `auth.revocation_url`.
+
 ## [1.0.1] - 2026-07-03
 
 ### Changed

@@ -119,6 +119,20 @@ module DB
         ON ai_connect_token_registry(revoked_at, expires_at);
     SQL
 
+    # Idempotent widen: legacy installs created ai_rate_limits.window_type as
+    # VARCHAR(10), which cannot hold 'token_minute'/'oauth_minute' — every call
+    # to the token endpoint (incl. refresh grants) failed with a 500.
+    conn.exec(<<~SQL)
+      DO $$
+      BEGIN
+        IF (SELECT character_maximum_length FROM information_schema.columns
+             WHERE table_name = 'ai_rate_limits' AND column_name = 'window_type'
+               AND table_schema = current_schema()) < 20 THEN
+          ALTER TABLE ai_rate_limits ALTER COLUMN window_type TYPE VARCHAR(20);
+        END IF;
+      END $$;
+    SQL
+
     conn.exec(<<~SQL)
       CREATE TABLE IF NOT EXISTS ai_blocked_users (
         user_id BIGINT PRIMARY KEY,
@@ -233,6 +247,41 @@ module DB
       "UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 WHERE token_prefix=$1 AND revoked_at IS NULL",
       [prefix, revoked_by]
     )
+  end
+
+  # RFC 7009 revocation (Servio SPEC §5.2). `token` may be the access OR the
+  # refresh token of a pair; either one revokes the WHOLE pair plus its registry
+  # row (admin list / "My tokens") in one transaction. `hint` only changes the
+  # lookup order. Tokens are stored in plaintext (no hash column), so the lookup
+  # is a plaintext match. Returns true if a pair was found (already-revoked
+  # pairs count too), false for unknown tokens — callers must not leak this.
+  def self.revoke_pair(token, hint: nil, revoked_by: nil)
+    return false if token.nil? || token.to_s.empty?
+
+    order = hint.to_s == 'refresh_token' ? %w[refresh access] : %w[access refresh]
+    row = nil
+    order.each do |type|
+      row = conn.exec_params(
+        'SELECT token, token_type, parent_token FROM ai_tokens WHERE token=$1 AND token_type=$2',
+        [token, type]
+      ).first
+      break if row
+    end
+    return false unless row
+
+    access = row['token_type'] == 'access' ? row['token'] : row['parent_token']
+    conn.transaction do |c|
+      c.exec_params('UPDATE ai_tokens SET revoked=TRUE WHERE token=$1', [row['token']])
+      if access && !access.empty?
+        c.exec_params('UPDATE ai_tokens SET revoked=TRUE WHERE token=$1 OR parent_token=$1', [access])
+        c.exec_params(
+          'UPDATE ai_connect_token_registry SET revoked_at=NOW(), revoked_by=$2 ' \
+          'WHERE token_prefix=$1 AND revoked_at IS NULL',
+          [token_prefix(access), revoked_by]
+        )
+      end
+    end
+    true
   end
 
   # ---------------------------------------------------------------------------

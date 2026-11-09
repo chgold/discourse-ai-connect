@@ -8,7 +8,7 @@ module ManifestController
     {
       schema_version:  '1.0',
       name:            'discourse-plugin',
-      version:         '1.2.0',
+      version:         '1.2.3',
       description:     'AI Connect for Discourse — search, read and participate in community discussions via AI agents',
       api_version:     'v1',
       capabilities:    { tools: true, resources: false, prompts: false },
