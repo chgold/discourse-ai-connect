@@ -30,11 +30,25 @@ module AiConnect
       }
     end
 
+    # Exact scope-token match: "read write" grants read and write; "rewrite"
+    # or "readonly" grant nothing. Never use substring matching here.
+    def self.scope_tokens(scope)
+      scope.to_s.split(/\s+/).reject(&:empty?)
+    end
+
+    def self.scope_grants?(scope, required)
+      scope_tokens(scope).include?(required.to_s)
+    end
+
     def execute_tool(tool_name, params, context = {})
       tool = @tools[tool_name.to_s]
       return { error: 'tool_not_found' } unless tool
 
-      if tool[:pro_only] && !context[:scope].to_s.include?('write')
+      unless ModuleBase.scope_grants?(context[:scope], tool[:required_scope])
+        return { error: 'insufficient_scope', message: "This tool requires #{tool[:required_scope]} scope" }
+      end
+
+      if tool[:pro_only] && !ModuleBase.scope_grants?(context[:scope], 'write')
         return { error: 'insufficient_scope', message: 'This tool requires write scope (Pro tier)' }
       end
 
@@ -50,9 +64,8 @@ module AiConnect
     end
 
     def manifest_tools(scope: 'read')
-      scope_str = scope.to_s
       @tools.values.select do |tool|
-        scope_str.include?('write') || tool[:required_scope] == 'read'
+        ModuleBase.scope_grants?(scope, tool[:required_scope])
       end.map do |tool|
         { name: tool[:name], description: tool[:description], input_schema: tool[:input_schema] }
       end

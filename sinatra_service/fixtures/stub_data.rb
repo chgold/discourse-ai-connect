@@ -32,8 +32,24 @@ module StubData
     { 'id' => 3, 'username' => 'bob',   'name' => 'Bob Demo',      'trust_level' => 1, 'post_count' => 3  }
   ].freeze
 
-  def self.lookup(method, path)
+  # /admin/users/:id.json view (bridge-internal uid -> username lookup).
+  ADMIN_USERS = {
+    1 => { 'id' => 1, 'username' => 'admin', 'admin' => true,  'moderator' => false, 'active' => true },
+    2 => { 'id' => 2, 'username' => 'alice', 'admin' => false, 'moderator' => false, 'active' => true },
+    3 => { 'id' => 3, 'username' => 'bob',   'admin' => false, 'moderator' => true,  'active' => true },
+    4 => { 'id' => 4, 'username' => 'mallory', 'admin' => false, 'moderator' => false, 'active' => true,
+           'suspended_till' => '2999-01-01T00:00:00Z' }
+  }.freeze
+
+  INVALID_ACCESS = { 'errors' => ['You are not permitted to view the requested resource.'],
+                     'error_type' => 'invalid_access' }.freeze
+
+  def self.lookup(method, path, username = nil)
     case
+    when path =~ %r{\A/admin/users/(\d+)\.json}
+      return INVALID_ACCESS unless username == 'system'
+
+      ADMIN_USERS[::Regexp.last_match(1).to_i] || { 'error_type' => 'not_found' }
     when path.start_with?('/categories.json')
       { 'category_list' => { 'categories' => CATEGORIES } }
     when path.start_with?('/latest.json')
@@ -52,7 +68,7 @@ module StubData
       topic = TOPICS.find { |t| t['id'] == tid }
       return { 'error_type' => 'not_found' } unless topic
       topic.merge('post_stream' => { 'posts' => POSTS.select { |p| p['topic_id'] == tid } })
-    when path =~ %r{\A/posts/(\d+)\.json}
+    when path =~ %r{\A/posts/(\d+)\.json} && method == :get
       pid = ::Regexp.last_match(1).to_i
       post = POSTS.find { |p| p['id'] == pid }
       return { 'error_type' => 'not_found' } unless post
@@ -65,7 +81,13 @@ module StubData
     when path == '/posts.json' && method == :post
       { 'id' => 9999, 'topic_id' => 999, 'username' => 'admin' }
     when path =~ %r{\A/posts/(\d+)\.json} && method == :put
-      { 'id' => ::Regexp.last_match(1).to_i, 'edited' => true }
+      # Mimic Guardian: only the author or an admin may edit a post.
+      pid = ::Regexp.last_match(1).to_i
+      post = POSTS.find { |p| p['id'] == pid }
+      return { 'error_type' => 'not_found' } unless post
+      return INVALID_ACCESS unless username == post['username'] || username == 'admin'
+
+      { 'id' => pid, 'edited' => true }
     when path == '/post_actions.json'
       { 'success' => 'OK' }
     else

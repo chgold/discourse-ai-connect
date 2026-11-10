@@ -2,6 +2,7 @@ en:
   site_settings:
     ai_connect_enabled: "Enable AI Connect — exposes /ai-connect-plugin routes and forwards to the Sinatra bridge."
     ai_connect_bridge_url: "URL of the AI Connect Sinatra bridge service."
+    ai_connect_proxy_secret: "Shared secret sent to the bridge on every proxied request (X-AI-Connect-Proxy-Secret). Must equal AI_CONNECT_PROXY_SECRET in the bridge env. Leave empty to use the AI_CONNECT_PROXY_SECRET environment variable. Without it the bridge refuses consent and token routes."
     ai_connect_notify_login: "Notify the bridge service when a user logs in (optional)."
   ai_connect:
     consent:

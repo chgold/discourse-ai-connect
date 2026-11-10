@@ -143,10 +143,12 @@ Pre-registered clients (with `read write delete` scope): `claude`, `chatgpt`, `g
 # 1. Manifest
 curl -s http://localhost:8086/api/ai-connect/manifest | jq .name
 
-# 2. Generate a quick test token (requires X-Discourse-Uid header)
+# 2. Generate a quick test token. X-Discourse-Uid is trusted ONLY together with
+#    the shared proxy secret (normally sent by the Discourse plugin).
 curl -s -X POST http://localhost:8086/api/ai-connect/generate-token \
+  -H "X-AI-Connect-Proxy-Secret: $AI_CONNECT_PROXY_SECRET" \
   -H "X-Discourse-Uid: 1"
-# → { "access_token": "dsc_…", "expires_in": 3600 }
+# → { "access_token": "xfa_…", "expires_in": 3600 }
 
 # 3. Call a tool
 export TOKEN="dsc_…"
@@ -201,7 +203,8 @@ curl -X POST http://localhost:8086/api/ai-connect/v1/tools/discourse.createTopic
 | Variable                          | Default                  | Purpose                                          |
 |-----------------------------------|--------------------------|--------------------------------------------------|
 | `PORT`                            | `3086`                   | Bind port for the bridge                         |
-| `BIND`                            | `0.0.0.0`                | Bind address                                     |
+| `BIND`                            | `127.0.0.1`              | Bind address (keep loopback; only Discourse should reach the bridge) |
+| `AI_CONNECT_PROXY_SECRET`         | _(required)_             | Shared secret the Discourse plugin sends as `X-AI-Connect-Proxy-Secret` (same value as site setting `ai_connect_proxy_secret`). Unset = consent, token-generation and user/admin token routes fail closed |
 | `RACK_ENV`                        | `development`            | `production` enables HTTPS upgrade + strict CORS |
 | `DB_HOST`                         | `127.0.0.1`              | PostgreSQL host                                  |
 | `DB_PORT`                         | `5432`                   | PostgreSQL port                                  |
@@ -209,8 +212,8 @@ curl -X POST http://localhost:8086/api/ai-connect/v1/tools/discourse.createTopic
 | `DB_USER`                         | `discourse`              | DB user                                          |
 | `DB_PASSWORD`                     | _(required in prod)_     | DB password                                      |
 | `DISCOURSE_URL`                   | `http://localhost:3000`  | Upstream Discourse REST endpoint                 |
-| `DISCOURSE_API_KEY`               | _(none)_                 | Discourse global API key                         |
-| `DISCOURSE_API_USER`              | `system`                 | Discourse API username header                    |
+| `DISCOURSE_API_KEY`               | _(none)_                 | Discourse **All Users** API key — tool calls send `Api-Username: <token owner>` so Discourse enforces that user's permissions |
+| `DISCOURSE_API_USER`              | `system`                 | Username used ONLY for bridge-internal lookups (uid → username, admin check); never for tool calls |
 | `DISCOURSE_AI_CONNECT_URL`        | `http://localhost:8086`  | Public URL used in manifest                      |
 | `ALLOWED_ORIGINS`                 | _(empty)_                | Comma-separated CORS whitelist                   |
 | `RATE_LIMIT_TOOL_PER_MINUTE`      | `50`                     | Per-token tool calls / minute                    |

@@ -23,18 +23,19 @@ module OAuthController
   end
 
   # Resolve the Discourse user who is approving the consent.
-  # Priority:
-  #   1. X-Discourse-Uid header (set by the Discourse plugin when proxying authorized session)
-  #   2. uid form param (only allowed when DEV_ALLOW_UID_PARAM=1)
-  #   3. nil → caller must redirect to Discourse SSO / login
+  # The X-Discourse-Uid header is trusted ONLY when the request carries the
+  # shared proxy secret (env['ai_connect.trusted_proxy'], set by the app after a
+  # constant-time compare). Anyone who can reach the sidecar directly could
+  # otherwise mint a code for any uid. The uid form param is a test-only aid.
   def self.resolve_uid(params, env)
+    return nil unless env['ai_connect.trusted_proxy'] == true
+
     header_uid = env['HTTP_X_DISCOURSE_UID']&.to_i
     return header_uid if header_uid && header_uid.positive?
 
-    if ENV['DEV_ALLOW_UID_PARAM'] == '1' && params['uid']
-      params['uid'].to_i
-    else
-      nil
+    if ENV['RACK_ENV'] == 'test' && ENV['DEV_ALLOW_UID_PARAM'] == '1' && params['uid']
+      uid = params['uid'].to_i
+      uid.positive? ? uid : nil
     end
   end
 
@@ -46,7 +47,6 @@ module OAuthController
     client = DB.get_client(client_id)
     return error_html('invalid_client', 'Unknown client_id') unless client
 
-    scope    = sanitize_scope(params['scope'])
     redirect = params['redirect_uri'].to_s
     state    = params['state'].to_s
     name     = client['client_name']
@@ -54,6 +54,12 @@ module OAuthController
     # If we can resolve the user from the Discourse session header, show consent.
     # Otherwise prompt them to login at Discourse first.
     uid = resolve_uid(params, env)
+    scope = clamp_scope(sanitize_scope(params['scope']), uid)
+    # Consent rendered through the Discourse proxy posts back to the proxy
+    # route (so the session + CSRF token are re-checked by Discourse).
+    form_action = env['ai_connect.trusted_proxy'] && env['HTTP_X_DISCOURSE_UID'] ? '/ai-connect-plugin/authorize' : '/oauth/authorize'
+    csrf = env['HTTP_X_AI_CONNECT_CSRF'].to_s
+    csrf_field = csrf.empty? ? '' : %(<input type="hidden" name="authenticity_token" value="#{CGI.escapeHTML(csrf)}">)
 
     if uid.nil?
       return <<~HTML
@@ -75,7 +81,8 @@ module OAuthController
       <h2>AI Connect Authorization</h2>
       <p>Agent <strong>#{CGI.escapeHTML(name.to_s)}</strong> requests access to your Discourse account (user ID #{uid}).</p>
       <p>Scopes: <strong>#{CGI.escapeHTML(scope)}</strong></p>
-      <form method="POST" action="/oauth/authorize">
+      <form method="POST" action="#{form_action}">
+        #{csrf_field}
         <input type="hidden" name="client_id" value="#{CGI.escapeHTML(client_id.to_s)}">
         <input type="hidden" name="code_challenge" value="#{CGI.escapeHTML(challenge.to_s)}">
         <input type="hidden" name="redirect_uri" value="#{CGI.escapeHTML(redirect)}">
@@ -104,7 +111,8 @@ module OAuthController
     return { error: 'invalid_request', error_description: 'PKCE challenge required' } if challenge.empty?
 
     code = SecureRandom.hex(32)
-    DB.save_code(code, params['client_id'], uid, sanitize_scope(params['scope']), challenge, params['redirect_uri'].to_s)
+    scope = clamp_scope(sanitize_scope(params['scope']), uid)
+    DB.save_code(code, params['client_id'], uid, scope, challenge, params['redirect_uri'].to_s)
 
     redirect_uri = params['redirect_uri']
     state        = params['state'].to_s
@@ -141,10 +149,22 @@ module OAuthController
   end
 
   ALLOWED_SCOPES = %w[read write delete].freeze
+  PRIVILEGED_SCOPES = %w[delete admin].freeze
   def self.sanitize_scope(raw)
     requested = raw.to_s.split(/\s+/).reject(&:empty?)
     filtered  = requested & ALLOWED_SCOPES
     filtered.empty? ? 'read' : filtered.join(' ')
+  end
+
+  # Privileged scopes (delete/admin) are granted only to Discourse admins.
+  # Everyone else gets at most "read write". Lookup failure = not admin.
+  def self.clamp_scope(scope, uid)
+    tokens = scope.to_s.split(/\s+/).reject(&:empty?)
+    return scope if (tokens & PRIVILEGED_SCOPES).empty?
+    return scope if uid && DiscourseUsers.admin?(uid)
+
+    clamped = tokens - PRIVILEGED_SCOPES
+    clamped.empty? ? 'read' : clamped.join(' ')
   end
 
   def self.error_html(error, description)

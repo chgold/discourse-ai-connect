@@ -1,6 +1,10 @@
 require_relative 'spec_helper'
 
 RSpec.describe AiConnect::ModuleRegistry do
+  # Module code calls Discourse as the acting user; outside the app this
+  # context must be set explicitly (no implicit system fallback).
+  around { |ex| DiscourseApi.as_user('admin') { ex.run } }
+
   let(:core) { AiConnect::Modules::CoreModule.new }
   let(:pro)  { AiConnect::Modules::ProModule.new }
 

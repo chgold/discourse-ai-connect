@@ -8,6 +8,9 @@ ENV['DISCOURSE_STUB_MODE'] = '1'
 ENV['DEV_ALLOW_UID_PARAM'] = '1'
 ENV['ALLOWED_ORIGINS'] = 'http://test.local,http://localhost:8086'
 ENV['AICONNECT_EDITION'] = 'pro'
+# Shared secret the Discourse proxy sends; specs act as the proxy by default.
+ENV['AI_CONNECT_PROXY_SECRET'] = 'spec-proxy-secret-0123456789abcdef0123456789'
+PROXY_SECRET_HEADER_NAME = 'X-AI-Connect-Proxy-Secret'
 
 require 'simplecov'
 SimpleCov.start do
@@ -59,7 +62,18 @@ RSpec.configure do |config|
   config.include Rack::Test::Methods
   config.include DBTestHelpers
 
-  config.before(:each) { reset_db! }
+  config.before(:each) do
+    reset_db!
+    DiscourseUsers.clear_cache!
+    DiscourseApi.last_stub_request = nil
+  end
+
+  # Requests made through rack-test behave as if relayed by the Discourse
+  # proxy (secret header present). Specs that test the untrusted path remove
+  # it with `header PROXY_SECRET_HEADER_NAME, nil`.
+  config.before(:each) do |example|
+    header PROXY_SECRET_HEADER_NAME, ENV['AI_CONNECT_PROXY_SECRET'] if respond_to?(:header)
+  end
 
   def app
     DiscourseAiConnect

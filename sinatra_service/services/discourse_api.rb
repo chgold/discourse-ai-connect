@@ -2,6 +2,7 @@ require 'net/http'
 require 'uri'
 require 'json'
 require 'logger'
+require 'time'
 
 module DiscourseApi
   LOGGER = Logger.new($stdout)
@@ -30,8 +31,44 @@ module DiscourseApi
     ENV.fetch('DISCOURSE_API_KEY', '')
   end
 
+  # The privileged identity used ONLY for bridge-internal lookups (resolving a
+  # token's uid to a username, checking admin status). Never used for tools.
   def self.api_user
     ENV.fetch('DISCOURSE_API_USER', 'system')
+  end
+
+  ACTING_USER_KEY = :ai_connect_discourse_api_username
+
+  # SEC-00 permission ceiling: every tool call is made AS the token owner, so
+  # Discourse's Guardian enforces that user's real permissions. Calls made
+  # outside an as_user / as_system block fail closed (no implicit system).
+  def self.as_user(username)
+    raise ArgumentError, 'username required' if username.to_s.strip.empty?
+
+    with_acting_user(username.to_s) { yield }
+  end
+
+  def self.as_system
+    with_acting_user(api_user) { yield }
+  end
+
+  def self.acting_username
+    Thread.current[ACTING_USER_KEY]
+  end
+
+  def self.with_acting_user(username)
+    previous = Thread.current[ACTING_USER_KEY]
+    Thread.current[ACTING_USER_KEY] = username
+    yield
+  ensure
+    Thread.current[ACTING_USER_KEY] = previous
+  end
+  private_class_method :with_acting_user
+
+  # Last request seen in stub mode — lets specs assert which Api-Username a
+  # tool call would have used, without a live Discourse.
+  class << self
+    attr_accessor :last_stub_request
   end
 
   def self.stub_mode?
@@ -51,7 +88,17 @@ module DiscourseApi
   end
 
   def self.call(method, path, body = nil)
-    return stub_response(method, path, body) if stub_mode?
+    username = acting_username
+    if username.nil? || username.empty?
+      LOGGER.error("Refusing Discourse API #{method.upcase} #{path}: no acting user (fail closed)")
+      return { 'error' => 'no_acting_user', 'error_type' => 'forbidden',
+               'message' => 'Discourse API call made without an acting user' }
+    end
+
+    if stub_mode?
+      self.last_stub_request = { method: method, path: path, username: username }
+      return stub_response(method, path, body, username)
+    end
 
     uri = URI("#{base_url}#{path}")
     http = Net::HTTP.new(uri.host, uri.port)
@@ -64,11 +111,17 @@ module DiscourseApi
           when :put  then Net::HTTP::Put.new(uri)
           end
     req['Api-Key']      = api_key unless api_key.empty?
-    req['Api-Username'] = api_user
+    req['Api-Username'] = username
     req['Content-Type'] = 'application/json'
     req.body = body.to_json if body && !body.empty?
     response = http.request(req)
-    JSON.parse(response.body)
+    parsed = JSON.parse(response.body)
+    code = response.code.to_i
+    if parsed.is_a?(Hash) && !(200..299).cover?(code)
+      parsed['error_type'] ||= "http_#{code}"
+      parsed['http_status'] = code
+    end
+    parsed
   rescue JSON::ParserError => e
     LOGGER.error("Discourse API returned invalid JSON for #{method.upcase} #{path}: #{e.message}")
     { 'error' => 'invalid_response', 'error_type' => 'json_parse', 'message' => 'Discourse API returned non-JSON' }
@@ -81,8 +134,71 @@ module DiscourseApi
   end
 
   # Used when DISCOURSE_STUB_MODE=1 (development / smoke tests without a real Discourse running)
-  def self.stub_response(method, path, _body)
+  def self.stub_response(method, path, _body, username = nil)
     require_relative '../fixtures/stub_data'
-    StubData.lookup(method, path)
+    StubData.lookup(method, path, username)
   end
+end
+
+# Resolves a token's Discourse uid to the user the bridge must act as.
+# The lookup itself runs as the privileged API user (admin endpoint); the
+# result is cached briefly so tool calls don't add a round-trip each time.
+module DiscourseUsers
+  CACHE_TTL = Integer(ENV.fetch('AI_CONNECT_USER_CACHE_TTL', '60'))
+  CACHE_MAX = 10_000
+  @cache = {}
+  @mutex = Mutex.new
+
+  # Returns { id:, username:, admin:, moderator: } or nil (unknown, suspended,
+  # inactive, staged, or lookup failure). Callers MUST fail closed on nil.
+  def self.resolve(uid)
+    uid = uid.to_i
+    return nil unless uid.positive?
+
+    now = Time.now.to_i
+    cached = @mutex.synchronize { @cache[uid] }
+    return cached[:user] if cached && cached[:expires_at] > now
+
+    user = fetch(uid)
+    if user
+      @mutex.synchronize do
+        @cache.clear if @cache.size >= CACHE_MAX
+        @cache[uid] = { user: user, expires_at: now + CACHE_TTL }
+      end
+    end
+    user
+  end
+
+  def self.admin?(uid)
+    resolve(uid)&.dig(:admin) == true
+  end
+
+  def self.clear_cache!
+    @mutex.synchronize { @cache.clear }
+  end
+
+  def self.fetch(uid)
+    data = DiscourseApi.as_system { DiscourseApi.get("/admin/users/#{uid}.json") }
+    return nil unless data.is_a?(Hash) && !data['error_type'] && !data['errors']
+
+    username = data['username'].to_s
+    return nil if username.empty? || data['id'].to_i != uid
+    return nil if data['active'] == false || data['staged'] == true
+    return nil if suspended?(data['suspended_till'])
+
+    { id: uid, username: username, admin: data['admin'] == true, moderator: data['moderator'] == true }
+  rescue StandardError => e
+    DiscourseApi::LOGGER.error("User lookup failed for uid=#{uid}: #{e.class}")
+    nil
+  end
+  private_class_method :fetch
+
+  def self.suspended?(till)
+    return false if till.nil? || till.to_s.empty?
+
+    Time.parse(till.to_s) > Time.now
+  rescue ArgumentError
+    true
+  end
+  private_class_method :suspended?
 end

@@ -22,11 +22,19 @@ module AiConnect
     end
 
     def authorize
+      unless current_user
+        cookies[:destination_url] = request.fullpath
+        return redirect_to path('/login')
+      end
+
       result = BridgeClient.proxy(
         :get,
         '/oauth/authorize',
-        user:   current_user,
-        params: params.permit(:client_id, :code_challenge, :redirect_uri, :scope, :state).to_h
+        user:    current_user,
+        params:  params.permit(:client_id, :code_challenge, :redirect_uri, :scope, :state).to_h,
+        # The consent form posts back to this proxy; Discourse's CSRF check
+        # must pass, so hand the bridge this session's token to embed.
+        headers: { 'X-AI-Connect-CSRF' => form_authenticity_token }
       )
       render html: result[:body].to_s.html_safe, status: result[:status]
     rescue BridgeClient::BridgeError => e

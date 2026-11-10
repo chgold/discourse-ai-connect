@@ -2,7 +2,7 @@ require_relative 'spec_helper'
 
 # RFC 7009 / Servio SPEC §5.2 conformance for POST /api/ai-connect/revoke.
 RSpec.describe 'Token revocation (RFC 7009)' do
-  let(:pair) { DB.save_tokens('claude', 7, 'read write') }
+  let(:pair) { DB.save_tokens('claude', 2, 'read write') }
 
   def tool_call(access)
     header 'Authorization', "Bearer #{access}"
@@ -76,7 +76,7 @@ RSpec.describe 'Token revocation (RFC 7009)' do
   end
 
   it 'does not touch other pairs' do
-    other = DB.save_tokens('claude', 7, 'read write')
+    other = DB.save_tokens('claude', 2, 'read write')
     post '/api/ai-connect/revoke', { token: pair[:access] }
     expect(tool_call(other[:access])).to eq(200)
   end

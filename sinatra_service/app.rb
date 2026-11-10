@@ -24,13 +24,16 @@ require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
 class DiscourseAiConnect < Sinatra::Base
-  PLUGIN_VERSION = '1.2.3'
+  PLUGIN_VERSION = '1.2.4'
 
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DiscourseAiConnect'
 
   set :port, ENV.fetch('PORT', 3086).to_i
-  set :bind, ENV.fetch('BIND', '0.0.0.0')
+  # Loopback by default: the only legitimate caller of the X-Discourse-Uid
+  # routes is the Discourse proxy on the same host. Override with BIND only
+  # behind a reverse proxy you control.
+  set :bind, ENV.fetch('BIND', '127.0.0.1')
   set :show_exceptions, false
   set :raise_errors, false
   set :dump_errors, false
@@ -46,7 +49,24 @@ class DiscourseAiConnect < Sinatra::Base
     ENV['RACK_ENV'] != 'production' && allowed_origins.empty?
   end
 
+  PROXY_SECRET_HEADER = 'HTTP_X_AI_CONNECT_PROXY_SECRET'
+
+  def self.proxy_secret
+    ENV.fetch('AI_CONNECT_PROXY_SECRET', '').to_s
+  end
+
   configure do
+    if proxy_secret.empty?
+      LOGGER.warn('SECURITY: AI_CONNECT_PROXY_SECRET is not set — OAuth consent, token generation and ' \
+                  'user/admin token routes that rely on X-Discourse-Uid will refuse every request (fail closed). ' \
+                  'Set the same value in the sidecar env and the Discourse site setting ai_connect_proxy_secret.')
+    elsif proxy_secret.bytesize < 32
+      LOGGER.warn('SECURITY: AI_CONNECT_PROXY_SECRET is shorter than 32 bytes — use a long random value.')
+    end
+    unless %w[127.0.0.1 localhost ::1].include?(settings.bind.to_s)
+      LOGGER.warn("SECURITY: sidecar bound to #{settings.bind} — keep it reachable only by the Discourse host.")
+    end
+
     registry = AiConnect::ModuleRegistry.new
     registry.register(AiConnect::Modules::CoreModule.new, key: 'core')
     registry.register(AiConnect::Modules::ContentModule.new, key: 'content')
@@ -70,6 +90,7 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   before do
+    request.env['ai_connect.trusted_proxy'] = trusted_proxy?
     origin = request.env['HTTP_ORIGIN']
     allowed = self.class.allowed_origins
     if origin
@@ -137,6 +158,7 @@ class DiscourseAiConnect < Sinatra::Base
   get '/oauth/authorize' do
     rate_check = RateLimitMiddleware.check_oauth(client_ip)
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
+    halt 503, json_error('proxy_secret_not_configured') if self.class.proxy_secret.empty?
     content_type :html
     OAuthController.authorize(params, request.env)
   end
@@ -144,6 +166,7 @@ class DiscourseAiConnect < Sinatra::Base
   post '/oauth/authorize' do
     rate_check = RateLimitMiddleware.check_oauth(client_ip)
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
+    require_trusted_proxy!
     result = OAuthController.handle_consent(params, request.env)
     if result[:redirect]
       redirect result[:redirect]
@@ -181,11 +204,14 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   post '/api/ai-connect/generate-token' do
-    uid = request.env['HTTP_X_DISCOURSE_UID']&.to_i
-    halt 401, json_error('not_authenticated') unless uid && uid.positive?
+    require_trusted_proxy!
+    uid = discourse_uid
+    halt 401, json_error('not_authenticated') unless uid
 
+    request.body.rewind
     body = JSON.parse(request.body.read) rescue {}
-    scope = body['scope'].to_s.strip.empty? ? 'read write' : body['scope'].to_s
+    body = {} unless body.is_a?(Hash)
+    scope = requested_scope(body['scope'], uid)
     client_id = body['client_id'].to_s.strip.empty? ? 'ai-agent-default' : body['client_id'].to_s
 
     tokens = DB.save_tokens(client_id, uid, scope,
@@ -200,11 +226,14 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   post '/api/ai-connect/generate-prompt' do
-    uid = request.env['HTTP_X_DISCOURSE_UID']&.to_i
-    halt 401, json_error('not_authenticated') unless uid && uid.positive?
+    require_trusted_proxy!
+    uid = discourse_uid
+    halt 401, json_error('not_authenticated') unless uid
 
+    request.body.rewind
     body = JSON.parse(request.body.read) rescue {}
-    scope = body['scope'].to_s.strip.empty? ? 'read write' : body['scope'].to_s
+    body = {} unless body.is_a?(Hash)
+    scope = requested_scope(body['scope'], uid)
 
     tokens = DB.save_tokens('ai-agent-default', uid, scope,
                             source: 'generator', ip_address: client_ip)
@@ -220,14 +249,14 @@ class DiscourseAiConnect < Sinatra::Base
   end
 
   # ---------------------------------------------------------------------------
-  # Admin — token management (requires Bearer + delete scope)
+  # Admin — token management. Requires a Discourse ADMIN, checked via the
+  # Discourse API (cached <= AI_CONNECT_USER_CACHE_TTL s), not just a scope: either a Bearer token with `delete` scope
+  # whose owner is an admin, or the trusted Discourse proxy acting for an admin.
   # ---------------------------------------------------------------------------
 
   # GET /api/ai-connect/admin/tokens[?filter=active|unused|inactive|expired|revoked]
   get '/api/ai-connect/admin/tokens' do
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     filter = params['filter']
     { tokens: DB.list_tokens(filter: filter) }.to_json
@@ -235,9 +264,7 @@ class DiscourseAiConnect < Sinatra::Base
 
   # DELETE /api/ai-connect/admin/tokens/:prefix — revoke single token by prefix
   delete '/api/ai-connect/admin/tokens/:prefix' do |prefix|
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     ok = DB.revoke_token_by_prefix(prefix, revoked_by: auth[:uid])
     halt 404, json_error('not_found') unless ok
@@ -247,9 +274,7 @@ class DiscourseAiConnect < Sinatra::Base
   # POST /api/ai-connect/admin/tokens/bulk-revoke
   # body: { "filter": "unused|inactive|all", "days": N (optional) }
   post '/api/ai-connect/admin/tokens/bulk-revoke' do
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     body = parse_json(request.body.read)
     filter = body['filter'].to_s
@@ -273,53 +298,41 @@ class DiscourseAiConnect < Sinatra::Base
 
   # GET /api/ai-connect/admin/users/:uid/tokens[?filter=...]
   get '/api/ai-connect/admin/users/:uid/tokens' do |uid|
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     filter = params['filter']
     { tokens: DB.list_tokens_for_user(uid.to_i, filter: filter) }.to_json
   end
 
   post '/api/ai-connect/admin/users/:uid/block' do |uid|
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     DB.block_user(uid.to_i, auth[:uid])
     { success: true, user_id: uid.to_i, blocked: true }.to_json
   end
 
   delete '/api/ai-connect/admin/users/:uid/block' do |uid|
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     DB.unblock_user(uid.to_i)
     { success: true, user_id: uid.to_i, blocked: false }.to_json
   end
 
   post '/api/ai-connect/admin/users/:uid/unblock' do |uid|
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     DB.unblock_user(uid.to_i)
     { success: true, user_id: uid.to_i, blocked: false }.to_json
   end
 
   get '/api/ai-connect/admin/users/:uid/blocked' do |uid|
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     { user_id: uid.to_i, blocked: DB.user_blocked?(uid.to_i) }.to_json
   end
 
   post '/api/ai-connect/admin/emergency-revoke-all' do
-    auth = AuthMiddleware.require_bearer(request)
-    halt 401, auth.to_json if auth[:error]
-    halt 403, json_error('insufficient_scope') unless auth[:scope].to_s.split.include?('delete')
+    auth = require_admin!
 
     count = DB.revoke_all_tokens(revoked_by: auth[:uid])
     { success: true, revoked: count }.to_json
@@ -332,6 +345,7 @@ class DiscourseAiConnect < Sinatra::Base
 
   # GET /api/ai-connect/tokens[?filter=...]
   get '/api/ai-connect/tokens' do
+    require_trusted_proxy!
     uid = discourse_uid
     halt 401, json_error('not_authenticated') unless uid
 
@@ -341,6 +355,7 @@ class DiscourseAiConnect < Sinatra::Base
 
   # DELETE /api/ai-connect/tokens/:prefix — user revokes one of their own tokens
   delete '/api/ai-connect/tokens/:prefix' do |prefix|
+    require_trusted_proxy!
     uid = discourse_uid
     halt 401, json_error('not_authenticated') unless uid
 
@@ -355,6 +370,7 @@ class DiscourseAiConnect < Sinatra::Base
   # POST /api/ai-connect/tokens/bulk-revoke
   # body: { "filter": "unused|inactive|all" }
   post '/api/ai-connect/tokens/bulk-revoke' do
+    require_trusted_proxy!
     uid = discourse_uid
     halt 401, json_error('not_authenticated') unless uid
 
@@ -387,6 +403,7 @@ class DiscourseAiConnect < Sinatra::Base
     required_scope = settings.module_registry.tool_required_scope(tool_name)
     halt 404, json_error('tool_not_found') if required_scope.nil?
     halt 405, json_error('method_not_allowed', message: 'This tool requires POST') unless required_scope == 'read'
+    require_tool_scope!(auth, required_scope)
 
     rate_check = RateLimitMiddleware.check_tool(auth[:token])
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
@@ -398,7 +415,7 @@ class DiscourseAiConnect < Sinatra::Base
       params.to_h.reject { |k, _| excluded.include?(k.to_s) }
     end
 
-    result = ToolsController.execute(tool_name, args, auth[:uid], auth[:scope])
+    result = execute_as_owner(tool_name, args, auth)
     has_error = result.is_a?(Hash) && result.key?(:error)
     if has_error
       status 404 if result[:error] == 'tool_not_found'
@@ -414,12 +431,17 @@ class DiscourseAiConnect < Sinatra::Base
 
     halt 403, json_error('user_blocked', message: 'User is blocked from API access') if DB.user_blocked?(auth[:uid])
 
+    required_scope = settings.module_registry.tool_required_scope(tool_name)
+    halt 404, { success: false, data: { error: 'tool_not_found' } }.to_json if required_scope.nil?
+    require_tool_scope!(auth, required_scope)
+
     rate_check = RateLimitMiddleware.check_tool(auth[:token])
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
 
     body_str = request.body.read
     params_json = parse_json(body_str)
-    result = ToolsController.execute(tool_name, params_json, auth[:uid], auth[:scope])
+    params_json = {} unless params_json.is_a?(Hash)
+    result = execute_as_owner(tool_name, params_json, auth)
     has_error = result.is_a?(Hash) && result.key?(:error)
     if has_error
       status 404 if result[:error] == 'tool_not_found'
@@ -449,9 +471,75 @@ class DiscourseAiConnect < Sinatra::Base
       request.env['HTTP_X_FORWARDED_FOR']&.split(',')&.first&.strip || request.ip || 'unknown'
     end
 
+    # True only when the request carries the shared secret the Discourse proxy
+    # sends (constant-time compare). Without it X-Discourse-Uid is ignored.
+    def trusted_proxy?
+      secret = self.class.proxy_secret
+      return false if secret.empty?
+
+      given = request.env[DiscourseAiConnect::PROXY_SECRET_HEADER].to_s
+      return false if given.empty?
+
+      Rack::Utils.secure_compare(Digest::SHA256.hexdigest(secret), Digest::SHA256.hexdigest(given))
+    end
+
+    def require_trusted_proxy!
+      halt 503, json_error('proxy_secret_not_configured') if self.class.proxy_secret.empty?
+      halt 403, json_error('untrusted_proxy') unless request.env['ai_connect.trusted_proxy'] == true
+    end
+
     def discourse_uid
+      return nil unless request.env['ai_connect.trusted_proxy'] == true
+
       uid = request.env['HTTP_X_DISCOURSE_UID']&.to_i
       uid && uid.positive? ? uid : nil
+    end
+
+    # Default "read write"; unknown scopes dropped; delete/admin only for admins.
+    def requested_scope(raw, uid)
+      raw = raw.to_s.strip.empty? ? 'read write' : raw.to_s
+      OAuthController.clamp_scope(OAuthController.sanitize_scope(raw), uid)
+    end
+
+    def require_tool_scope!(auth, required_scope)
+      return if AiConnect::ModuleBase.scope_grants?(auth[:scope], required_scope)
+
+      halt 403, { success: false,
+                  data: { error: 'insufficient_scope', message: "This tool requires #{required_scope} scope" } }.to_json
+    end
+
+    # SEC-00: run the tool AS the token owner. Unresolvable owner = 403; there
+    # is no fallback to the system user.
+    def execute_as_owner(tool_name, args, auth)
+      owner = DiscourseUsers.resolve(auth[:uid])
+      unless owner
+        LOGGER.warn("tool #{tool_name} refused: token owner uid=#{auth[:uid]} could not be resolved")
+        halt 403, { success: false, data: { error: 'user_not_permitted',
+                                            message: 'Token owner could not be resolved to an active Discourse user' } }.to_json
+      end
+      DiscourseApi.as_user(owner[:username]) do
+        ToolsController.execute(tool_name, args, auth[:uid], auth[:scope])
+      end
+    end
+
+    # Admin routes: Discourse admin status is checked live (as system) for the
+    # acting identity. Returns { uid: } for audit fields.
+    def require_admin!
+      header = request.env['HTTP_AUTHORIZATION'].to_s
+      if header.start_with?('Bearer ')
+        auth = AuthMiddleware.require_bearer(request)
+        halt 401, auth.to_json if auth[:error]
+        halt 403, json_error('insufficient_scope') unless AiConnect::ModuleBase.scope_grants?(auth[:scope], 'delete')
+        halt 403, json_error('admin_required') unless DiscourseUsers.admin?(auth[:uid])
+        return auth
+      end
+
+      if request.env['ai_connect.trusted_proxy'] == true && (uid = discourse_uid)
+        halt 403, json_error('admin_required') unless DiscourseUsers.admin?(uid)
+        return { uid: uid }
+      end
+
+      halt 401, { error: 'unauthorized', error_description: 'Bearer token required' }.to_json
     end
 
     def json_error(code, **extra)

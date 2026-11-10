@@ -4,6 +4,37 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.4] - 2026-11-10
+
+### Security (SEC-00 permission ceiling — a tool can never do more than the token owner)
+- **Tools act as the token owner.** Every Discourse API call made by a tool now
+  sends `Api-Username: <token owner>` (uid resolved via `/admin/users/:id.json`,
+  cached 60 s) instead of `system`, so Discourse's Guardian enforces the user's
+  real permissions (no more reading others' PMs / staff categories or editing
+  any post). An owner that cannot be resolved (unknown, suspended, inactive,
+  staged, lookup error) gets `403 user_not_permitted`; there is no fallback to
+  `system`. Calls outside an explicit acting-user context are refused.
+- **Exact scope matching.** Each tool's `required_scope` is enforced on both the
+  GET and POST tool routes and inside `ModuleBase#execute_tool`, by whole
+  whitespace-separated tokens (`rewrite` no longer satisfies `write`).
+- **Token-admin routes require a Discourse admin** (checked via the API), not
+  just the `delete` scope: Bearer token with `delete` whose owner is an admin,
+  or the trusted Discourse proxy acting for an admin.
+- **Sidecar trust.** `X-Discourse-Uid` is honoured only with the shared secret
+  `X-AI-Connect-Proxy-Secret` (env `AI_CONNECT_PROXY_SECRET` = site setting
+  `ai_connect_proxy_secret`, constant-time compare) on OAuth consent,
+  generate-token/prompt, and user/admin token routes. Unset secret = those
+  routes return `503` (fail closed) with a startup warning. Default bind is now
+  `127.0.0.1`. `DEV_ALLOW_UID_PARAM` is honoured only under `RACK_ENV=test`.
+- **Scope clamping.** Requested scopes at OAuth consent and generate-token are
+  filtered to `read write delete`; `delete`/`admin` are granted only to
+  Discourse admins, everyone else gets at most `read write`.
+
+### Fixed
+- Discourse plugin: bridge client supports `DELETE` (token revoke via the proxy
+  failed); consent form posts back to `/ai-connect-plugin/authorize` with the
+  session CSRF token; anonymous `/authorize` redirects to login.
+
 ## [1.2.3] - 2026-11-09
 
 ### Security

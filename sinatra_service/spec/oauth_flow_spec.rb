@@ -71,8 +71,8 @@ RSpec.describe 'OAuth PKCE flow' do
       }
       expect(last_response.status).to eq(200)
       body = JSON.parse(last_response.body)
-      expect(body['access_token']).to start_with('dsc_')
-      expect(body['refresh_token']).to start_with('dscr_')
+      expect(body['access_token']).to start_with('xfa_')
+      expect(body['refresh_token']).to start_with('xfr_')
       expect(body['token_type']).to eq('Bearer')
       expect(body['expires_in']).to eq(3600)
     end
@@ -120,7 +120,7 @@ RSpec.describe 'OAuth PKCE flow' do
       post '/api/ai-connect/token', { grant_type: 'refresh_token', refresh_token: first['refresh_token'] }
       expect(last_response.status).to eq(200)
       second = JSON.parse(last_response.body)
-      expect(second['access_token']).to start_with('dsc_')
+      expect(second['access_token']).to start_with('xfa_')
       expect(second['access_token']).not_to eq(first['access_token'])
     end
   end
