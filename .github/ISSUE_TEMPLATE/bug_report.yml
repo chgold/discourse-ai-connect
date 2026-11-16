@@ -1,0 +1,42 @@
+name: Bug report
+description: Something in the plugin does not work as documented.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problem? Please do not report it here — see SECURITY.md.
+        Never paste access tokens, licence keys or passwords in an issue.
+  - type: input
+    id: plugin_version
+    attributes:
+      label: Plugin version
+      description: Admin → Plugins, or GET /api/ai-connect/manifest → version
+      placeholder: "1.2.5"
+    validations:
+      required: true
+  - type: input
+    id: discourse_version
+    attributes:
+      label: Discourse version and install type
+      placeholder: "2026.7.5, standard Docker install, subfolder"
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: AI agent / client
+      placeholder: "Claude, ChatGPT, curl, …"
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include the tool name and the input you sent (without the token).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected and what happened
+    validations:
+      required: true

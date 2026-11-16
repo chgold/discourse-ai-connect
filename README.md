@@ -1,11 +1,16 @@
-# Discourse AI Connect
+# Goldnat AI Connect for Discourse
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.0.0-green.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.2.5-green.svg)](CHANGELOG.md)
 
-**Connect AI agents (Claude, ChatGPT, Gemini, Grok, Copilot, Perplexity, …) to your Discourse forum via the [WebMCP / GACP](https://github.com/chgold/webmcp-spec) protocol.**
+**Lets AI agents (Claude, ChatGPT, Gemini, Grok, Copilot, Perplexity, Meta AI, DeepSeek, …) search and read your Discourse forum through OAuth 2.0 + PKCE, acting as the user who approved them, with that user's permissions.**
 
-AI Connect exposes a clean OAuth2-protected tool API on top of Discourse. Once installed, any AI client that speaks the WebMCP manifest format can search topics, fetch posts, read user profiles, and — with **Pro** scope — create topics, reply, edit posts, send PMs, and like content.
+Agents discover the available tools from a JSON manifest (the open [Servio](https://github.com/chgold/servio) protocol), so no per-agent setup is needed.
+
+- **25 read-only tools.** This plugin does not create, edit or delete anything.
+- **Runs as the token owner.** Tool calls reach the Discourse API with `Api-Username` set to the user who approved the agent, so Discourse's own Guardian decides what is visible: no private messages, staff categories or hidden topics the user could not see in the browser. A user who is suspended, staged, inactive or cannot be resolved is refused (`403`), with no fallback to the system user.
+- **Exact scope checks** on every call, **rate limiting** per user and per endpoint, token list and revocation for users and admins, RFC 7009 revocation.
+- **Subfolder installs** (`relative_url_root`) are supported.
 
 ---
 
@@ -15,34 +20,37 @@ AI Connect has two cooperating pieces:
 
 ```
   AI Agent  ─►  Sinatra bridge service  ◄─►  Discourse REST API
-                  (this repo)
+                  (sinatra_service/)
                   ▲
-                  │  /ai-connect-plugin/* proxy
+                  │  /ai-connect-plugin/* proxy (+ shared secret)
                   │
               Discourse plugin
-              (mounted inside Discourse)
+              (discourse_plugin/, mounted inside Discourse)
 ```
 
 | Piece                 | Path                    | Role                                                                   |
 |-----------------------|-------------------------|------------------------------------------------------------------------|
-| **Sinatra bridge**    | `sinatra_service/`      | OAuth2 + PKCE, tool dispatch, rate limit, manifest, all REST calls     |
-| **Discourse plugin**  | `discourse_plugin/`     | Forwards `/ai-connect-plugin/*` to the bridge, injects authenticated UID|
+| **Sinatra bridge**    | `sinatra_service/`      | OAuth2 + PKCE, tool dispatch, rate limit, manifest, all REST calls (Ruby/Sinatra + its own PostgreSQL database) |
+| **Discourse plugin**  | `discourse_plugin/`     | Consent screen; forwards `/ai-connect-plugin/*` to the bridge with the signed-in user's id |
 
-### 11 tools (6 free + 5 Pro)
+The two parts trust each other only through a shared secret (`ai_connect_proxy_secret` / `AI_CONNECT_PROXY_SECRET`). If it is unset, the sensitive routes return `503`.
 
-| Tool                            | Scope        | Description                                  |
-|---------------------------------|--------------|----------------------------------------------|
-| `discourse.searchTopics`        | read         | Search forum topics by keyword               |
-| `discourse.getTopic`            | read         | Get a topic with all its posts               |
-| `discourse.getPost`             | read         | Get a single post by ID                      |
-| `discourse.getCategories`       | read         | List forum categories                        |
-| `discourse.getUserProfile`      | read         | Get a user profile                           |
-| `discourse.getLatestTopics`     | read         | Latest topics, optional category filter      |
-| `discourse.createTopic`         | write (Pro)  | Create a new topic                           |
-| `discourse.replyToTopic`        | write (Pro)  | Reply to an existing topic                   |
-| `discourse.editPost`            | write (Pro)  | Edit a post                                  |
-| `discourse.sendMessage`         | write (Pro)  | Send a private message                       |
-| `discourse.likePost`            | write (Pro)  | Like / unlike a post                         |
+### 25 tools (all `read` scope)
+
+| Group | Tools |
+|-------|-------|
+| Topics | `discourse.searchTopics`, `discourse.getTopic`, `discourse.getTopicSummary`, `discourse.getTopicPostsRange`, `discourse.getLatestTopics`, `discourse.getTopTopics` |
+| Posts | `discourse.getPost`, `discourse.searchPosts`, `discourse.searchByAuthor`, `discourse.searchInCategory`, `discourse.getPostRevisions`, `discourse.getPostRevisionContent` |
+| Categories | `discourse.getCategories`, `discourse.listCategories`, `discourse.getCategory`, `discourse.searchCategories`, `discourse.listTopicsByCategory` |
+| Tags | `discourse.listTags`, `discourse.getTag`, `discourse.searchTags`, `discourse.listTopicsByTag`, `discourse.searchByTag` |
+| Users | `discourse.getUserProfile`, `discourse.searchUsers` |
+| Stats | `discourse.getForumStats` (unanswered topics count) |
+
+A paid edition with write tools is planned but not released yet.
+
+### External services
+
+None by default. If an `AICONNECT_LICENSE_KEY` is set on the bridge (paid edition only), the key is validated against `https://goldnat.ai/api/licenses/public/validate`. Without a key, no request leaves your server.
 
 ---
 
@@ -87,17 +95,23 @@ Then rebuild:
 ./launcher rebuild app
 ```
 
-In **development**, just symlink:
+In **development**, symlink the plugin directory:
 
 ```bash
-ln -s /workspace/plugins/discourse/discourse-ai-connect/discourse_plugin \
-      /var/www/discourse/plugins/ai-connect
+ln -s /path/to/discourse-ai-connect/discourse_plugin \
+      /path/to/discourse/plugins/ai-connect
 ```
 
 Then go to **Admin → Settings → Plugins** and configure:
 
-- `ai_connect_enabled = true`
-- `ai_connect_bridge_url = http://localhost:3086`
+| Setting | Description |
+|---------|-------------|
+| `ai_connect_enabled` | Turn the plugin on or off (default: on) |
+| `ai_connect_bridge_url` | Where the bridge runs (default `http://localhost:3086`) |
+| `ai_connect_proxy_secret` | Shared secret — the same value as `AI_CONNECT_PROXY_SECRET` on the bridge. Required. Generate with `openssl rand -hex 32` |
+| `ai_connect_notify_login` | Tell the bridge when a user logs in (default: off) |
+
+Open `/ai-connect-plugin/` while logged in to get a ready-made prompt for your AI agent.
 
 ---
 
@@ -135,7 +149,7 @@ AI Connect uses **OAuth2 Authorization Code Grant with PKCE** (RFC 7636). PKCE i
 └──────────┘
 ```
 
-Pre-registered clients (with `read write delete` scope): `claude`, `chatgpt`, `gemini`, `grok`, `copilot`, `perplexity`, `metaai`, `deepseek`, `ai-agent-default`.
+Pre-registered clients: `claude`, `chatgpt`, `gemini`, `grok`, `copilot`, `perplexity`, `meta-ai`, `deepseek`, `ai-agent-default`, plus `webmcp-master` (the Goldnat test client).
 
 ### Manual smoke test
 
@@ -189,11 +203,6 @@ curl -X POST http://localhost:8086/api/ai-connect/v1/tools/discourse.getTopic \
 curl -X POST http://localhost:8086/api/ai-connect/v1/tools/discourse.getUserProfile \
   -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
   -d '{"username":"admin"}'
-
-# createTopic — write scope (Pro)
-curl -X POST http://localhost:8086/api/ai-connect/v1/tools/discourse.createTopic \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-  -d '{"title":"From AI","raw":"This was posted by an agent.","category_id":1}'
 ```
 
 ---
@@ -276,7 +285,7 @@ discourse-ai-connect/
 ├── README.md
 ├── CHANGELOG.md
 ├── LICENSE                    # GPL-3.0
-└── TEST_CREDENTIALS.md
+└── SECURITY.md
 ```
 
 ---
@@ -291,6 +300,14 @@ discourse-ai-connect/
 - **Rate limiting**: per-IP on OAuth endpoints, per-token on tool endpoints
 - **Input validation** on every tool parameter (type + length limits)
 - **Bearer tokens** are random 32-byte hex, scoped, time-limited (1h), revocable
+
+---
+
+## Support
+
+- Bugs and questions: <https://github.com/chgold/discourse-ai-connect/issues>
+- Security issues: see [SECURITY.md](SECURITY.md) — please do not open a public issue
+- Documentation: <https://plugins.goldnat.ai/discourse>
 
 ---
 
