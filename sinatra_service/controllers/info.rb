@@ -56,7 +56,7 @@ module InfoController
     uri  = URI.parse(base) rescue nil
     host_part = uri&.host || 'discourse'
     path_part = (uri&.path || '').chomp('/')
-    # MCP site name: host + path-prefix (e.g. "dev.gold-t.co.il/discourse")
+    # MCP site name: host + path-prefix (e.g. "forum.example.com/discourse")
     site_name_mcp = path_part.empty? ? host_part : "#{host_part}#{path_part}"
     site_key  = site_name_mcp.gsub(/[^a-zA-Z0-9_-]/, '_')
     manifest  = "#{base}/api/aiconnect-manifest"

@@ -37,6 +37,6 @@ cd /var/discourse/containers/app.yml      # in standard Discourse install
 For development:
 
 ```bash
-ln -s /workspace/plugins/discourse/discourse-ai-connect/discourse_plugin \
+ln -s /path/to/discourse-ai-connect/discourse_plugin \
       /var/www/discourse/plugins/ai-connect
 ```
