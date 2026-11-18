@@ -70,5 +70,13 @@ module AiConnect
         { name: tool[:name], description: tool[:description], input_schema: tool[:input_schema] }
       end
     end
+
+    # Optional hook: return an array of brief-metric definitions this module
+    # publishes to goldnat.ai. The registry calls this on register() and forwards
+    # each entry to register_brief_metric. Default is [] — most modules override
+    # only when they have declarative metrics to publish.
+    def brief_metrics
+      []
+    end
   end
 end

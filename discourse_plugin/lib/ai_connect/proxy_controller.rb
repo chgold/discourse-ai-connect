@@ -34,7 +34,10 @@ module AiConnect
         params:  params.permit(:client_id, :code_challenge, :redirect_uri, :scope, :state).to_h,
         # The consent form posts back to this proxy; Discourse's CSRF check
         # must pass, so hand the bridge this session's token to embed.
-        headers: { 'X-AI-Connect-CSRF' => form_authenticity_token }
+        headers: { 'X-AI-Connect-CSRF' => form_authenticity_token,
+                   # Subfolder installs (relative_url_root): the form must post to
+                   # <base_path>/ai-connect-plugin/authorize, not the domain root.
+                   'X-AI-Connect-Base-Path' => Discourse.base_path.to_s }
       )
       render html: result[:body].to_s.html_safe, status: result[:status]
     rescue BridgeClient::BridgeError => e

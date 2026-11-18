@@ -24,7 +24,7 @@ require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
 class DiscourseAiConnect < Sinatra::Base
-  PLUGIN_VERSION = '1.2.4'
+  PLUGIN_VERSION = '1.2.5'
 
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DiscourseAiConnect'
@@ -167,7 +167,12 @@ class DiscourseAiConnect < Sinatra::Base
     rate_check = RateLimitMiddleware.check_oauth(client_ip)
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
     require_trusted_proxy!
-    result = OAuthController.handle_consent(params, request.env)
+    # The Discourse proxy forwards the consent as a JSON body; Sinatra params
+    # only carry form-encoded fields, so merge both (form values win).
+    json_body = parse_json(request.body.read)
+    request.body.rewind
+    consent = json_body.is_a?(Hash) ? json_body.merge(params) : params
+    result = OAuthController.handle_consent(consent, request.env)
     if result[:redirect]
       redirect result[:redirect]
     else

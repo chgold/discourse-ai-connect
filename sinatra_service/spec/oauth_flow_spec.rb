@@ -25,6 +25,20 @@ RSpec.describe 'OAuth PKCE flow' do
       expect(last_response.body).to include('user ID 1')
     end
 
+    it 'prefixes the consent form action with the Discourse base path (subfolder install)' do
+      header 'X-Discourse-Uid', '1'
+      header 'X-AI-Connect-Base-Path', '/forum'
+      get '/oauth/authorize', { client_id: 'claude', code_challenge: challenge }
+      expect(last_response.body).to include('action="/forum/ai-connect-plugin/authorize"')
+    end
+
+    it 'ignores a malformed base path header' do
+      header 'X-Discourse-Uid', '1'
+      header 'X-AI-Connect-Base-Path', 'https://evil.example/x"'
+      get '/oauth/authorize', { client_id: 'claude', code_challenge: challenge }
+      expect(last_response.body).to include('action="/ai-connect-plugin/authorize"')
+    end
+
     it 'shows sign-in prompt when no uid resolved' do
       ENV['DEV_ALLOW_UID_PARAM'] = '0'
       get '/oauth/authorize', { client_id: 'claude', code_challenge: challenge }
@@ -40,6 +54,18 @@ RSpec.describe 'OAuth PKCE flow' do
         redirect_uri: 'http://app.local/cb', scope: 'read', uid: '1', approved: 'false'
       }
       expect(last_response.headers['Location']).to include('error=access_denied')
+    end
+
+    it 'accepts the consent as a JSON body (what the Discourse proxy sends)' do
+      header 'X-Discourse-Uid', '1'
+      post '/oauth/authorize',
+           { client_id: 'claude', code_challenge: challenge, redirect_uri: 'http://app.local/cb',
+             scope: 'read write', state: 'js1', approved: 'true' }.to_json,
+           { 'CONTENT_TYPE' => 'application/json' }
+      expect(last_response.status).to be_between(300, 399)
+      loc = last_response.headers['Location']
+      expect(loc).to match(/code=[0-9a-f]+/)
+      expect(loc).to include('state=js1')
     end
 
     it 'redirects with code on approval' do
