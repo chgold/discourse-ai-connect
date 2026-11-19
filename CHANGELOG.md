@@ -4,6 +4,40 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.6] - 2026-11-20
+
+### Added (Deep Research round 2 — all read-only, as the connected user)
+- 10 tools: `getCurrentUser` (who am I + token scopes), `getForumStatistics`
+  (About-page counts, no contact e-mail), `getBadges`, `getSuggestedTopics`,
+  `getTopicParticipants`, `getPostLikes`, `getUserActivity`, and the connected
+  user's OWN `getNotifications`, `getBookmarks`, `getDrafts` (always the token
+  owner — a username in the arguments is ignored).
+- `goldnat` pre-registered OAuth client.
+
+### Fixed
+- A tool error such as "not found" was returned with HTTP 200; tool errors now
+  carry a real status (404 not found, 400 bad input, 403 scope, 502 upstream).
+- When Discourse failed (timeout / 5xx / non-JSON), list tools answered an
+  empty list with success=true; they now answer `upstream_error` (502).
+- The token button in Discourse ignored the requested scope and always issued
+  "read write"; the requested scope / client is now forwarded (still clamped
+  to what the user may hold; unknown clients fall back to the generic one).
+- `getForumStats` counted only the first 30 topics; it now scans up to 300
+  and reports `scanned_topics` + `complete`.
+
+## [1.2.5] - 2026-11-11
+
+### Fixed (found on the first run inside a real Discourse — DEV, v2026.7.5, subfolder install)
+- **Consent approval was always treated as "denied".** The Discourse proxy
+  forwards the consent as a JSON body, but the bridge's `POST /oauth/authorize`
+  read only form-encoded params, so `approved` was never seen and no
+  authorization code was issued. The route now merges the JSON body (same as
+  the token endpoint). Still requires the trusted proxy secret.
+- **Subfolder installs (`relative_url_root`).** The consent form posted to
+  `/ai-connect-plugin/authorize` at the domain root. The Discourse plugin now
+  sends its base path (`X-AI-Connect-Base-Path`), and the bridge prefixes the
+  form action with it (trusted proxy only, strict path validation).
+
 ## [1.2.4] - 2026-11-10
 
 ### Security (SEC-00 permission ceiling — a tool can never do more than the token owner)

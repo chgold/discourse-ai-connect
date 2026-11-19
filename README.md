@@ -7,7 +7,7 @@
 
 Agents discover the available tools from a JSON manifest (the open [Servio](https://github.com/chgold/servio) protocol), so no per-agent setup is needed.
 
-- **25 read-only tools.** This plugin does not create, edit or delete anything.
+- **35 read-only tools.** This plugin does not create, edit or delete anything.
 - **Runs as the token owner.** Tool calls reach the Discourse API with `Api-Username` set to the user who approved the agent, so Discourse's own Guardian decides what is visible: no private messages, staff categories or hidden topics the user could not see in the browser. A user who is suspended, staged, inactive or cannot be resolved is refused (`403`), with no fallback to the system user.
 - **Exact scope checks** on every call, **rate limiting** per user and per endpoint, token list and revocation for users and admins, RFC 7009 revocation.
 - **Subfolder installs** (`relative_url_root`) are supported.
@@ -35,16 +35,17 @@ AI Connect has two cooperating pieces:
 
 The two parts trust each other only through a shared secret (`ai_connect_proxy_secret` / `AI_CONNECT_PROXY_SECRET`). If it is unset, the sensitive routes return `503`.
 
-### 25 tools (all `read` scope)
+### 35 tools (all `read` scope)
 
 | Group | Tools |
 |-------|-------|
-| Topics | `discourse.searchTopics`, `discourse.getTopic`, `discourse.getTopicSummary`, `discourse.getTopicPostsRange`, `discourse.getLatestTopics`, `discourse.getTopTopics` |
-| Posts | `discourse.getPost`, `discourse.searchPosts`, `discourse.searchByAuthor`, `discourse.searchInCategory`, `discourse.getPostRevisions`, `discourse.getPostRevisionContent` |
+| Topics | `discourse.searchTopics`, `discourse.getTopic`, `discourse.getTopicSummary`, `discourse.getTopicPostsRange`, `discourse.getLatestTopics`, `discourse.getTopTopics`, `discourse.getSuggestedTopics`, `discourse.getTopicParticipants` |
+| Posts | `discourse.getPost`, `discourse.searchPosts`, `discourse.searchByAuthor`, `discourse.searchInCategory`, `discourse.getPostRevisions`, `discourse.getPostRevisionContent`, `discourse.getPostLikes` |
 | Categories | `discourse.getCategories`, `discourse.listCategories`, `discourse.getCategory`, `discourse.searchCategories`, `discourse.listTopicsByCategory` |
 | Tags | `discourse.listTags`, `discourse.getTag`, `discourse.searchTags`, `discourse.listTopicsByTag`, `discourse.searchByTag` |
-| Users | `discourse.getUserProfile`, `discourse.searchUsers` |
-| Stats | `discourse.getForumStats` (unanswered topics count) |
+| Users | `discourse.getUserProfile`, `discourse.searchUsers`, `discourse.getUserActivity`, `discourse.getCurrentUser` (who am I + token scopes) |
+| My items (connected user only) | `discourse.getNotifications`, `discourse.getBookmarks`, `discourse.getDrafts` |
+| Forum | `discourse.getForumStats` (unanswered topics count), `discourse.getForumStatistics` (About-page counts), `discourse.getBadges` |
 
 A paid edition with write tools is planned but not released yet.
 

@@ -49,9 +49,68 @@ module AiConnect
           required_scope: 'read',
           validation_schema: { required: {}, optional: { category_id: :integer, page: :integer } }
         }
+
+        register_tool :getForumStats, {
+          description: 'Return community stats — currently `unanswered_count` (visible topics with only the opening post, no replies), with scanned_topics and complete. from/to/timezone are accepted for the uniform brief-collector shape but the count is a live snapshot at query time.',
+          input_schema: {
+            type: 'object',
+            properties: {
+              from:     { type: 'string' },
+              to:       { type: 'string' },
+              timezone: { type: 'string' }
+            }
+          },
+          required_scope: 'read',
+          validation_schema: { required: {}, optional: { from: :string, to: :string, timezone: :string } }
+        }
+      end
+
+      def brief_metrics
+        [{
+          key: 'community.unanswered.count',
+          tool: "#{module_name}.getForumStats",
+          args: { from: '{{periodStart}}', to: '{{periodEnd}}', timezone: '{{timezone}}' },
+          valuePath: 'unanswered_count',
+          granularity: 'day'
+        }]
       end
 
       private
+
+      # Unanswered = visible topic with only its opening post. /latest.json is
+      # paged (30 per page); scan up to FORUM_STATS_MAX_PAGES pages and say
+      # whether the count is complete, instead of silently counting page 1.
+      FORUM_STATS_MAX_PAGES = 10
+
+      def execute_getForumStats(params, _context)
+        unanswered = 0
+        scanned = 0
+        complete = false
+        FORUM_STATS_MAX_PAGES.times do |page|
+          result = DiscourseApi.get("/latest.json?no_definitions=true&page=#{page}")
+          topics = result.dig('topic_list', 'topics') || []
+          scanned += topics.size
+          unanswered += topics.count { |t| (t['posts_count'] || 0).to_i == 1 && t['visible'] != false }
+          more = result.dig('topic_list', 'more_topics_url')
+          if topics.empty? || more.to_s.empty?
+            complete = true
+            break
+          end
+        end
+        {
+          unanswered_count: unanswered,
+          scanned_topics: scanned,
+          complete: complete,
+          definition: {
+            posts_count: 1,
+            note: 'Visible topic with posts_count=1 (opening post only, no replies) that the connected user can see. ' \
+                  "Snapshot at query time — not filtered by from/to. complete=false means more than #{FORUM_STATS_MAX_PAGES * 30} topics; the count covers the newest ones."
+          },
+          from:     params[:from],
+          to:       params[:to],
+          timezone: params[:timezone]
+        }
+      end
 
       def execute_searchTopics(params, _context)
         result = DiscourseApi.get("/search.json?q=#{URI.encode_www_form_component(params[:query])}&page=#{params[:page] || 1}")

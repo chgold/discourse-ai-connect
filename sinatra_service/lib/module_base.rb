@@ -60,7 +60,14 @@ module AiConnect
         return { error: 'not_implemented', message: "Tool #{tool_name} not implemented" }
       end
 
-      send(method_name, validated, context)
+      DiscourseApi.reset_upstream_failure! if defined?(DiscourseApi)
+      result = send(method_name, validated, context)
+      failure = defined?(DiscourseApi) ? DiscourseApi.upstream_failure : nil
+      if failure
+        return { error: 'upstream_error', message: "Discourse did not answer correctly (#{failure}); try again later" }
+      end
+
+      result
     end
 
     def manifest_tools(scope: 'read')
@@ -69,6 +76,14 @@ module AiConnect
       end.map do |tool|
         { name: tool[:name], description: tool[:description], input_schema: tool[:input_schema] }
       end
+    end
+
+    # Optional hook: return an array of brief-metric definitions this module
+    # publishes to goldnat.ai. The registry calls this on register() and forwards
+    # each entry to register_brief_metric. Default is [] — most modules override
+    # only when they have declarative metrics to publish.
+    def brief_metrics
+      []
     end
   end
 end

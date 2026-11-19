@@ -34,7 +34,10 @@ module AiConnect
         params:  params.permit(:client_id, :code_challenge, :redirect_uri, :scope, :state).to_h,
         # The consent form posts back to this proxy; Discourse's CSRF check
         # must pass, so hand the bridge this session's token to embed.
-        headers: { 'X-AI-Connect-CSRF' => form_authenticity_token }
+        headers: { 'X-AI-Connect-CSRF' => form_authenticity_token,
+                   # Subfolder installs (relative_url_root): the form must post to
+                   # <base_path>/ai-connect-plugin/authorize, not the domain root.
+                   'X-AI-Connect-Base-Path' => Discourse.base_path.to_s }
       )
       render html: result[:body].to_s.html_safe, status: result[:status]
     rescue BridgeClient::BridgeError => e
@@ -62,7 +65,11 @@ module AiConnect
     def generate_token
       raise Discourse::NotLoggedIn unless current_user
 
-      result = BridgeClient.proxy(:post, '/api/ai-connect/generate-token', user: current_user)
+      # Forward the requested scope / client (1.2.6): before this the bridge
+      # never saw them and always issued "read write". The bridge still clamps
+      # the scope to what this user may hold.
+      body = params.permit(:scope, :client_id).to_h.compact
+      result = BridgeClient.proxy(:post, '/api/ai-connect/generate-token', user: current_user, body: body)
       render json: result[:body], status: result[:status]
     rescue BridgeClient::BridgeError => e
       render json: { error: 'bridge_unreachable', message: e.message }, status: 502

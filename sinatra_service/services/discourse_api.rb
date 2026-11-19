@@ -115,22 +115,48 @@ module DiscourseApi
     req['Content-Type'] = 'application/json'
     req.body = body.to_json if body && !body.empty?
     response = http.request(req)
-    parsed = JSON.parse(response.body)
     code = response.code.to_i
+    parsed = JSON.parse(response.body)
     if parsed.is_a?(Hash) && !(200..299).cover?(code)
       parsed['error_type'] ||= "http_#{code}"
       parsed['http_status'] = code
     end
+    note_upstream_failure("HTTP #{code}") if code >= 500
     parsed
   rescue JSON::ParserError => e
     LOGGER.error("Discourse API returned invalid JSON for #{method.upcase} #{path}: #{e.message}")
+    # A non-JSON 4xx page is still Discourse's answer (not found / forbidden).
+    return { 'error' => 'invalid_response', 'error_type' => "http_#{code}", 'http_status' => code } if code.to_i.between?(400, 499)
+
+    note_upstream_failure('non-JSON response')
     { 'error' => 'invalid_response', 'error_type' => 'json_parse', 'message' => 'Discourse API returned non-JSON' }
   rescue Net::OpenTimeout, Net::ReadTimeout => e
     LOGGER.error("Discourse API timeout for #{method.upcase} #{path}: #{e.message}")
+    note_upstream_failure('timeout')
     { 'error' => 'timeout', 'error_type' => 'timeout', 'message' => e.message }
   rescue StandardError => e
     LOGGER.error("Discourse API error for #{method.upcase} #{path}: #{e.class}: #{e.message}")
+    note_upstream_failure(e.class.name)
     { 'error' => e.message, 'error_type' => 'api_error' }
+  end
+
+  # Upstream failure tracking (1.2.6): list tools used to turn a Discourse
+  # outage into an empty list with success=true. A tool call now records the
+  # first server-side failure (5xx / timeout / non-JSON / connection error) and
+  # ModuleBase turns the call into upstream_error (HTTP 502). 4xx answers are
+  # NOT failures — they are Discourse's permission / not-found decisions.
+  UPSTREAM_FAILURE_KEY = :ai_connect_upstream_failure
+
+  def self.reset_upstream_failure!
+    Thread.current[UPSTREAM_FAILURE_KEY] = nil
+  end
+
+  def self.upstream_failure
+    Thread.current[UPSTREAM_FAILURE_KEY]
+  end
+
+  def self.note_upstream_failure(reason)
+    Thread.current[UPSTREAM_FAILURE_KEY] ||= reason.to_s
   end
 
   # Used when DISCOURSE_STUB_MODE=1 (development / smoke tests without a real Discourse running)

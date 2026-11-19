@@ -16,10 +16,10 @@ RSpec.describe AiConnect::Modules::CoreModule do
   end
 
   describe 'registered tools' do
-    it 'registers exactly the 6 free tools' do
+    it 'registers exactly the 7 free tools' do
       expect(mod.tools.keys).to contain_exactly(
         'searchTopics', 'getTopic', 'getPost',
-        'getCategories', 'getUserProfile', 'getLatestTopics'
+        'getCategories', 'getUserProfile', 'getLatestTopics', 'getForumStats'
       )
     end
 

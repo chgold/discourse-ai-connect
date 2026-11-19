@@ -88,6 +88,7 @@ RSpec.describe 'Tool execution' do
 
     it '404s unknown topic' do
       tool_post('discourse.getTopic', { topic_id: 99999 })
+      expect(last_response.status).to eq(404) # 1.2.6: was 200 with success=false
       expect(JSON.parse(last_response.body)['data']['error']).to eq('not_found')
     end
 

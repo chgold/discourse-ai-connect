@@ -39,6 +39,16 @@ module OAuthController
     end
   end
 
+  # Base path of a subfolder Discourse install (e.g. "/forum"), sent by the
+  # Discourse proxy. Honoured only from the trusted proxy and only when it is a
+  # plain absolute path; anything else means "installed at the domain root".
+  def self.proxy_base_path(env)
+    return '' unless env['ai_connect.trusted_proxy'] == true
+
+    path = env['HTTP_X_AI_CONNECT_BASE_PATH'].to_s
+    path.match?(%r{\A(/[A-Za-z0-9._~-]+)+\z}) ? path : ''
+  end
+
   def self.authorize(params, env)
     client_id = params['client_id']
     challenge = params['code_challenge']
@@ -57,7 +67,7 @@ module OAuthController
     scope = clamp_scope(sanitize_scope(params['scope']), uid)
     # Consent rendered through the Discourse proxy posts back to the proxy
     # route (so the session + CSRF token are re-checked by Discourse).
-    form_action = env['ai_connect.trusted_proxy'] && env['HTTP_X_DISCOURSE_UID'] ? '/ai-connect-plugin/authorize' : '/oauth/authorize'
+    form_action = env['ai_connect.trusted_proxy'] && env['HTTP_X_DISCOURSE_UID'] ? "#{proxy_base_path(env)}/ai-connect-plugin/authorize" : '/oauth/authorize'
     csrf = env['HTTP_X_AI_CONNECT_CSRF'].to_s
     csrf_field = csrf.empty? ? '' : %(<input type="hidden" name="authenticity_token" value="#{CGI.escapeHTML(csrf)}">)
 

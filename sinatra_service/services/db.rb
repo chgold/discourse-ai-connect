@@ -159,6 +159,7 @@ module DB
       { id: 'perplexity',        name: 'perplexity',        scopes: 'read write delete' },
       { id: 'meta-ai',           name: 'meta-ai',           scopes: 'read write delete' },
       { id: 'deepseek',          name: 'deepseek',          scopes: 'read write delete' },
+      { id: 'goldnat',           name: 'goldnat',           scopes: 'read write delete' },
       { id: 'ai-agent-default',  name: 'ai-agent-default',  scopes: 'read write delete' },
     ]
     seeded_clients.each do |c|

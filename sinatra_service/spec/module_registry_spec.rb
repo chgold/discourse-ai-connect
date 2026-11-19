@@ -28,9 +28,9 @@ RSpec.describe AiConnect::ModuleRegistry do
       expect(names).not_to include('discourse.createTopic')
     end
 
-    it 'returns 11 tools for write scope' do
+    it 'returns 12 tools for write scope (7 core + 5 pro)' do
       tools = registry.all_tools(scope: 'read write')
-      expect(tools.size).to eq(11)
+      expect(tools.size).to eq(12)
     end
   end
 

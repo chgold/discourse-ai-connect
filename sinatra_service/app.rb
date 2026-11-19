@@ -15,6 +15,7 @@ require_relative 'lib/module_base'
 require_relative 'lib/module_registry'
 require_relative 'lib/modules/core_module'
 require_relative 'lib/modules/content_module'
+require_relative 'lib/modules/community_module'
 require_relative 'lib/pro_loader'
 require_relative 'controllers/manifest'
 require_relative 'controllers/oauth'
@@ -24,7 +25,7 @@ require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
 class DiscourseAiConnect < Sinatra::Base
-  PLUGIN_VERSION = '1.2.4'
+  PLUGIN_VERSION = '1.2.6'
 
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DiscourseAiConnect'
@@ -70,6 +71,7 @@ class DiscourseAiConnect < Sinatra::Base
     registry = AiConnect::ModuleRegistry.new
     registry.register(AiConnect::Modules::CoreModule.new, key: 'core')
     registry.register(AiConnect::Modules::ContentModule.new, key: 'content')
+    registry.register(AiConnect::Modules::CommunityModule.new, key: 'community')
     AiConnect::ProLoader.load(registry)
     AiConnect::ModuleRegistry.run_init_callbacks(registry)
     set :module_registry, registry
@@ -167,7 +169,12 @@ class DiscourseAiConnect < Sinatra::Base
     rate_check = RateLimitMiddleware.check_oauth(client_ip)
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
     require_trusted_proxy!
-    result = OAuthController.handle_consent(params, request.env)
+    # The Discourse proxy forwards the consent as a JSON body; Sinatra params
+    # only carry form-encoded fields, so merge both (form values win).
+    json_body = parse_json(request.body.read)
+    request.body.rewind
+    consent = json_body.is_a?(Hash) ? json_body.merge(params) : params
+    result = OAuthController.handle_consent(consent, request.env)
     if result[:redirect]
       redirect result[:redirect]
     else
@@ -212,7 +219,10 @@ class DiscourseAiConnect < Sinatra::Base
     body = JSON.parse(request.body.read) rescue {}
     body = {} unless body.is_a?(Hash)
     scope = requested_scope(body['scope'], uid)
-    client_id = body['client_id'].to_s.strip.empty? ? 'ai-agent-default' : body['client_id'].to_s
+    # Only a pre-registered client id is recorded on the token; anything else
+    # (typo, made-up name) falls back to the generic generator client.
+    requested_client = DB.get_client(body['client_id'].to_s.strip) unless body['client_id'].to_s.strip.empty?
+    client_id = requested_client ? requested_client['client_id'] : 'ai-agent-default'
 
     tokens = DB.save_tokens(client_id, uid, scope,
                             source: 'generator', ip_address: client_ip)
@@ -417,11 +427,7 @@ class DiscourseAiConnect < Sinatra::Base
 
     result = execute_as_owner(tool_name, args, auth)
     has_error = result.is_a?(Hash) && result.key?(:error)
-    if has_error
-      status 404 if result[:error] == 'tool_not_found'
-      status 403 if result[:error] == 'insufficient_scope'
-      status 400 if result[:error] == 'invalid_params'
-    end
+    status tool_error_status(result[:error]) if has_error
     { success: !has_error, data: result }.to_json
   end
 
@@ -443,11 +449,7 @@ class DiscourseAiConnect < Sinatra::Base
     params_json = {} unless params_json.is_a?(Hash)
     result = execute_as_owner(tool_name, params_json, auth)
     has_error = result.is_a?(Hash) && result.key?(:error)
-    if has_error
-      status 404 if result[:error] == 'tool_not_found'
-      status 403 if result[:error] == 'insufficient_scope'
-      status 400 if result[:error] == 'invalid_params'
-    end
+    status tool_error_status(result[:error]) if has_error
     { success: !has_error, data: result }.to_json
   end
 
@@ -540,6 +542,18 @@ class DiscourseAiConnect < Sinatra::Base
       end
 
       halt 401, { error: 'unauthorized', error_description: 'Bearer token required' }.to_json
+    end
+
+    # Tool error code -> HTTP status. A tool error must never travel as 200
+    # (agents read 200 as success). Unknown codes = 400 (bad request).
+    TOOL_ERROR_STATUS = {
+      'tool_not_found' => 404, 'not_found' => 404, 'insufficient_scope' => 403,
+      'forbidden' => 403, 'invalid_params' => 400, 'not_implemented' => 501,
+      'upstream_error' => 502
+    }.freeze
+
+    def tool_error_status(code)
+      TOOL_ERROR_STATUS.fetch(code.to_s, 400)
     end
 
     def json_error(code, **extra)
