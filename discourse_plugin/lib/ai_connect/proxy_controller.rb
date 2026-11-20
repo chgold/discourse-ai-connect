@@ -4,7 +4,8 @@ module AiConnect
   class ProxyController < ::ApplicationController
     requires_plugin AiConnect::PLUGIN_NAME
 
-    skip_before_action :check_xhr, only: [:info, :manifest, :authorize, :handle_consent]
+    skip_before_action :check_xhr, only: [:info, :manifest, :authorize, :handle_consent,
+                                         :ai_actions, :ai_actions_decide, :ai_actions_revoke_autonomy]
     before_action :ensure_enabled
 
     def info
@@ -58,6 +59,53 @@ module AiConnect
       else
         render plain: result[:body], status: result[:status]
       end
+    rescue BridgeClient::BridgeError => e
+      render plain: "Bridge unavailable: #{e.message}", status: 502
+    end
+
+    # -------------------------------------------------------------------------
+    # AI actions — the human step of user-confirm-v1 (1.2.7)
+    # A pending destructive action runs only when the signed-in user confirms it
+    # here. Requests authenticated by an API key, a user API key or an
+    # Authorization header are refused: whoever holds a token (the agent) must
+    # never be able to confirm. POSTs are CSRF-checked by Discourse.
+    # -------------------------------------------------------------------------
+
+    # GET /ai-connect-plugin/ai-actions[?confirmation_id=...]
+    def ai_actions
+      refuse_token_auth!
+      unless current_user
+        cookies[:destination_url] = request.fullpath
+        return redirect_to path('/login')
+      end
+
+      result = BridgeClient.proxy(:get, '/api/ai-connect/confirmations/page', user: current_user,
+                                  params: params.permit(:confirmation_id).to_h, headers: ai_actions_headers)
+      render html: result[:body].to_s.html_safe, status: result[:status]
+    rescue BridgeClient::BridgeError => e
+      render plain: "Bridge unavailable: #{e.message}", status: 502
+    end
+
+    # POST /ai-connect-plugin/ai-actions/decide  (confirmation_id, decision=confirm|reject, autonomy=1)
+    def ai_actions_decide
+      refuse_token_auth!
+      raise Discourse::NotLoggedIn unless current_user
+
+      result = BridgeClient.proxy(:post, '/api/ai-connect/confirmations/decide', user: current_user,
+                                  body: params.permit(:confirmation_id, :decision, :autonomy).to_h, headers: ai_actions_headers)
+      render html: result[:body].to_s.html_safe, status: result[:status]
+    rescue BridgeClient::BridgeError => e
+      render plain: "Bridge unavailable: #{e.message}", status: 502
+    end
+
+    # POST /ai-connect-plugin/ai-actions/autonomy/revoke  (grant_id)
+    def ai_actions_revoke_autonomy
+      refuse_token_auth!
+      raise Discourse::NotLoggedIn unless current_user
+
+      result = BridgeClient.proxy(:post, '/api/ai-connect/confirmations/autonomy/revoke', user: current_user,
+                                  body: params.permit(:grant_id).to_h, headers: ai_actions_headers)
+      render html: result[:body].to_s.html_safe, status: result[:status]
     rescue BridgeClient::BridgeError => e
       render plain: "Bridge unavailable: #{e.message}", status: 502
     end
@@ -179,6 +227,18 @@ module AiConnect
     end
 
     private
+
+    def refuse_token_auth!
+      token_auth = is_api? || is_user_api? || request.authorization.present? ||
+                   request.headers['Api-Key'].present? || request.headers['User-Api-Key'].present?
+      raise Discourse::InvalidAccess if token_auth
+    end
+
+    def ai_actions_headers
+      { 'X-AI-Connect-CSRF' => form_authenticity_token,
+        'X-AI-Connect-Base-Path' => Discourse.base_path.to_s,
+        'X-AI-Connect-Locale' => current_user.effective_locale.to_s }
+    end
 
     def ensure_enabled
       raise Discourse::NotFound unless SiteSetting.ai_connect_enabled

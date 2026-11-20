@@ -28,9 +28,11 @@ RSpec.describe AiConnect::ModuleRegistry do
       expect(names).not_to include('discourse.createTopic')
     end
 
-    it 'returns 12 tools for write scope (7 core + 5 pro)' do
+    it 'returns the core read tools plus every Pro tool for write scope' do
       tools = registry.all_tools(scope: 'read write')
-      expect(tools.size).to eq(12)
+      pro = AiConnect::Modules::ProModule.new.tools.size
+      expect(tools.size).to eq(registry.all_tools(scope: 'read').size + pro - 2) # 2 Pro tools are read-scope
+      expect(tools.map { |t| t[:name] }).to include('discourse.createTopic', 'discourse.deletePost', 'discourse.getReviewQueue')
     end
   end
 

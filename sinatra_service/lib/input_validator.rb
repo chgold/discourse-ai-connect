@@ -6,7 +6,7 @@ module InputValidator
     raw_params = {} unless raw_params.is_a?(Hash)
     out = {}
     schema[:required].each do |key, type|
-      val = raw_params[key.to_s] || raw_params[key]
+      val = fetch(raw_params, key)
       if val.nil? || (val.is_a?(String) && val.strip.empty?)
         return [nil, "Missing required parameter: #{key}"]
       end
@@ -15,13 +15,18 @@ module InputValidator
       out[key] = coerced
     end
     schema[:optional].each do |key, type|
-      val = raw_params[key.to_s] || raw_params[key]
+      val = fetch(raw_params, key)
       next if val.nil?
       coerced, err = coerce(val, type, key)
       return [nil, err] if err
       out[key] = coerced
     end
     [out, nil]
+  end
+
+  # 1.2.7: key lookup, not `a || b` — a boolean `false` was read as "missing".
+  def self.fetch(raw_params, key)
+    raw_params.key?(key.to_s) ? raw_params[key.to_s] : raw_params[key]
   end
 
   def self.coerce(val, type, key)

@@ -11,16 +11,16 @@ RSpec.describe AiConnect::Modules::ProModule do
   let(:read_ctx)  { { scope: 'read', uid: 1 } }
 
   describe 'registered tools' do
-    it 'registers exactly the 5 pro tools' do
-      expect(mod.tools.keys).to contain_exactly(
-        'createTopic', 'replyToTopic', 'editPost', 'sendMessage', 'likePost'
-      )
+    it 'registers the 26 Pro tools (5 write + 21 moderation, Deep Research round 375)' do
+      expect(mod.tools.keys).to include('createTopic', 'replyToTopic', 'editPost', 'sendMessage', 'likePost')
+      expect(mod.tools.size).to eq(26)
     end
 
-    it 'marks all as pro_only with write scope' do
+    it 'marks all as pro_only; only the two staff reads are read-scope' do
       mod.tools.each_value do |t|
-        expect(t[:required_scope]).to eq('write')
         expect(t[:pro_only]).to be true
+        expected = %w[getReviewQueue getStaffActionLog].include?(t[:short_name]) ? 'read' : 'write'
+        expect(t[:required_scope]).to eq(expected)
       end
     end
   end

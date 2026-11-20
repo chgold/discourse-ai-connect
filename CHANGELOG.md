@@ -4,6 +4,31 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.7] - unreleased
+
+### Added — user confirmation for risky actions (user-confirm-v1)
+- A tool can declare `confirmation:`. Calling it does not run it: the bridge answers
+  HTTP 202 `pending_confirmation` with a plain summary for the user and a
+  `confirm_url`. The action runs once, as that user, only after the user confirms
+  on the new page **/ai-connect-plugin/ai-actions** inside Discourse (signed-in
+  session + CSRF; requests with an API key, a user API key or an Authorization
+  header are refused, so the agent can never confirm itself).
+- Pending actions are bound to user + tool + arguments + client, expire after 15
+  minutes, are single-use, and a re-sent `confirmation_id` only reports the result.
+  A repeat of a just-confirmed call returns the stored result ("already executed").
+- Optional per-user, per-tool, per-client autonomy grant (revocable on the page;
+  site switch `AI_CONNECT_CONFIRMATION_AUTONOMY=0`), and an append-only event log.
+- Agent status route `GET /api/ai-connect/v1/confirmations/{id}`; the manifest
+  advertises `capabilities.confirmation`, a `confirmation` block, per-tool
+  `confirmation` / `risk`, and an `instructions` paragraph.
+- Used by the Pro package (discourse-moderator-ai-connect 1.1.0) for deleting
+  posts/topics, suspending/silencing users and deleting review decisions.
+
+### Fixed
+- Pro licence check expected the free core's slug, so a valid licence of the paid
+  product (`discourse-moderator-ai-connect`) could never unlock Pro.
+- Input validation read a boolean `false` as a missing parameter.
+
 ## [1.2.6] - 2026-11-20
 
 ### Added (Deep Research round 2 — all read-only, as the connected user)

@@ -26,7 +26,9 @@ module AiConnect
         input_schema: config[:input_schema],
         required_scope: config[:required_scope] || 'read',
         pro_only: config[:pro_only] || false,
-        validation_schema: config[:validation_schema] || { required: {}, optional: {} }
+        validation_schema: config[:validation_schema] || { required: {}, optional: {} },
+        # user-confirm-v1 (1.2.7): { required: true | ->(args) { bool }, risk:, summary:, preview: :method }
+        confirmation: config[:confirmation]
       }
     end
 
@@ -61,7 +63,9 @@ module AiConnect
       end
 
       DiscourseApi.reset_upstream_failure! if defined?(DiscourseApi)
-      result = send(method_name, validated, context)
+      # Confirmation gate (1.2.7): order = scope -> validation -> confirmation -> the tool's own checks.
+      gated = tool[:confirmation] && defined?(AiConnect::Confirmation) ? AiConnect::Confirmation.gate(self, tool, validated, params, context) : nil
+      result = gated || send(method_name, validated, context)
       failure = defined?(DiscourseApi) ? DiscourseApi.upstream_failure : nil
       if failure
         return { error: 'upstream_error', message: "Discourse did not answer correctly (#{failure}); try again later" }
@@ -74,7 +78,15 @@ module AiConnect
       @tools.values.select do |tool|
         ModuleBase.scope_grants?(scope, tool[:required_scope])
       end.map do |tool|
-        { name: tool[:name], description: tool[:description], input_schema: tool[:input_schema] }
+        entry = { name: tool[:name], description: tool[:description], input_schema: tool[:input_schema] }
+        if tool[:confirmation] && defined?(AiConnect::Confirmation)
+          entry[:confirmation] = AiConnect::Confirmation.mode(tool)
+          entry[:risk] = AiConnect::Confirmation.risk(tool)
+          lead = entry[:confirmation] == 'conditional' ? 'Some of its actions need' : 'Needs'
+          entry[:description] = "#{tool[:description]} #{lead} the user's confirmation: the call returns 202 with a " \
+                                'link for the user; nothing happens until the user confirms.'
+        end
+        entry
       end
     end
 

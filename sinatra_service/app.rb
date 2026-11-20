@@ -17,15 +17,17 @@ require_relative 'lib/modules/core_module'
 require_relative 'lib/modules/content_module'
 require_relative 'lib/modules/community_module'
 require_relative 'lib/pro_loader'
+require_relative 'lib/confirmation'
 require_relative 'controllers/manifest'
 require_relative 'controllers/oauth'
 require_relative 'controllers/tools'
 require_relative 'controllers/info'
+require_relative 'controllers/confirmations'
 require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
 class DiscourseAiConnect < Sinatra::Base
-  PLUGIN_VERSION = '1.2.6'
+  PLUGIN_VERSION = '1.2.7'
 
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DiscourseAiConnect'
@@ -79,6 +81,7 @@ class DiscourseAiConnect < Sinatra::Base
 
   configure :production, :development do
     DB.init_schema
+    ConfirmationStore.init_schema
 
     # Daily cleanup scheduler — background thread, fires once per process lifetime
     # whenever CLEANUP_INTERVAL elapses.  Errors are swallowed so the process
@@ -448,9 +451,66 @@ class DiscourseAiConnect < Sinatra::Base
     params_json = parse_json(body_str)
     params_json = {} unless params_json.is_a?(Hash)
     result = execute_as_owner(tool_name, params_json, auth)
+    if result.is_a?(Hash) && result[:error] == 'confirmation_required' && result[:confirmation_envelope]
+      status 202
+      return result[:confirmation_envelope].to_json
+    end
     has_error = result.is_a?(Hash) && result.key?(:error)
     status tool_error_status(result[:error]) if has_error
     { success: !has_error, data: result }.to_json
+  end
+
+  # ---------------------------------------------------------------------------
+  # user-confirm-v1 (1.2.7)
+  # ---------------------------------------------------------------------------
+
+  # Agent: status of a confirmation it asked for (same user only). Reading it never executes anything.
+  get '/api/ai-connect/v1/confirmations/:id' do |id|
+    auth = AuthMiddleware.require_bearer(request)
+    halt 401, auth.to_json if auth[:error]
+
+    action = ConfirmationStore.find(id)
+    halt 404, { success: false, data: { error: 'confirmation_not_found' } }.to_json if action.nil? || action['uid'] != auth[:uid]
+
+    ConfirmationStore.sweep!
+    action = ConfirmationStore.find(id)
+    ConfirmationStore.mark_delivered(id) if %w[executed failed].include?(action['status'])
+    { success: true, data: AiConnect::Confirmation.status_payload(action) }.to_json
+  end
+
+  # Human step — reached ONLY through the Discourse proxy (shared secret + the signed-in user's id).
+  # The Discourse controller refuses API-key / user-API-key / Authorization requests and checks CSRF.
+  get '/api/ai-connect/confirmations/page' do
+    require_trusted_proxy!
+    uid = discourse_uid
+    halt 401, json_error('login_required') unless uid
+
+    content_type :html
+    ConfirmationsController.page(uid, confirmation_page_opts.merge(focus: params['confirmation_id']))
+  end
+
+  post '/api/ai-connect/confirmations/decide' do
+    require_trusted_proxy!
+    uid = discourse_uid
+    halt 401, json_error('login_required') unless uid
+
+    content_type :html
+    body = parse_json(request.body.read)
+    body = {} unless body.is_a?(Hash)
+    status_code, html = ConfirmationsController.decide(uid, body, settings.module_registry, confirmation_page_opts)
+    status status_code
+    html
+  end
+
+  post '/api/ai-connect/confirmations/autonomy/revoke' do
+    require_trusted_proxy!
+    uid = discourse_uid
+    halt 401, json_error('login_required') unless uid
+
+    content_type :html
+    body = parse_json(request.body.read)
+    body = {} unless body.is_a?(Hash)
+    ConfirmationsController.revoke_autonomy(uid, body['grant_id'], confirmation_page_opts)
   end
 
   # ---------------------------------------------------------------------------
@@ -519,9 +579,16 @@ class DiscourseAiConnect < Sinatra::Base
         halt 403, { success: false, data: { error: 'user_not_permitted',
                                             message: 'Token owner could not be resolved to an active Discourse user' } }.to_json
       end
+      extra = { client_id: auth[:client_id], token_prefix: auth[:token] ? DB.token_prefix(auth[:token]) : nil, ip: client_ip }
       DiscourseApi.as_user(owner[:username]) do
-        ToolsController.execute(tool_name, args, auth[:uid], auth[:scope])
+        ToolsController.execute(tool_name, args, auth[:uid], auth[:scope], extra: extra)
       end
+    end
+
+    # Headers the Discourse proxy adds for the confirmation page (CSRF token of the session, base path, locale).
+    def confirmation_page_opts
+      { csrf: request.env['HTTP_X_AI_CONNECT_CSRF'].to_s, base_path: request.env['HTTP_X_AI_CONNECT_BASE_PATH'].to_s,
+        locale: request.env['HTTP_X_AI_CONNECT_LOCALE'].to_s, ip: client_ip }
     end
 
     # Admin routes: Discourse admin status is checked live (as system) for the
@@ -549,7 +616,11 @@ class DiscourseAiConnect < Sinatra::Base
     TOOL_ERROR_STATUS = {
       'tool_not_found' => 404, 'not_found' => 404, 'insufficient_scope' => 403,
       'forbidden' => 403, 'invalid_params' => 400, 'not_implemented' => 501,
-      'upstream_error' => 502
+      'upstream_error' => 502,
+      # user-confirm-v1 (1.2.7)
+      'confirmation_rejected' => 410, 'confirmation_expired' => 410, 'confirmation_mismatch' => 409,
+      'confirmation_not_found' => 404, 'confirmation_unavailable' => 403, 'bridge_update_required' => 501,
+      'user_blocked' => 403, 'token_revoked' => 403, 'user_not_permitted' => 403
     }.freeze
 
     def tool_error_status(code)

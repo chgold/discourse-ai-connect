@@ -21,7 +21,7 @@ module AuthMiddleware
       Thread.new { DB.run_cleanup rescue nil }
     end
 
-    { uid: rec['uid'].to_i, scope: rec['scope'], token: token }
+    { uid: rec['uid'].to_i, scope: rec['scope'], token: token, client_id: rec['client_id'] }
   end
 
   def self.extract_ip(request)

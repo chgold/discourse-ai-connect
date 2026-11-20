@@ -90,6 +90,8 @@ module StubData
       { 'id' => pid, 'edited' => true }
     when path == '/post_actions.json'
       { 'success' => 'OK' }
+    when method == :delete && path.start_with?('/post_actions/')
+      { 'success' => 'OK' } # 1.2.7: Pro likePost unlike=true
     else
       { 'error_type' => 'not_implemented', 'message' => "Stub does not implement #{method} #{path}" }
     end

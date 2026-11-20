@@ -15,7 +15,7 @@ require_relative '../services/db'
 module AiConnect
   class LicenseClient
     API_URL       = 'https://goldnat.ai/api/licenses/public/validate'
-    EXPECTED_SLUG = 'discourse-plugin'
+    EXPECTED_SLUG = 'discourse-moderator-ai-connect' # 1.2.7: the paid product (licence prefix DIS), not the free core
     CACHE_KEY     = 'license_status'
     CACHE_TTL_MS  = 24 * 60 * 60 * 1000
     VALID_STATUSES = %w[valid valid_no_updates].freeze
@@ -80,7 +80,7 @@ module AiConnect
       req.body = JSON.generate(
         license_key: key,
         domain: current_domain,
-        addon_version: '1.0.0'
+        addon_version: (defined?(DiscourseAiConnect::PLUGIN_VERSION) ? DiscourseAiConnect::PLUGIN_VERSION : '1.2.7')
       )
 
       res = http.request(req)

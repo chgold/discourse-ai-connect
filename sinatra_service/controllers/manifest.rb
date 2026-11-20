@@ -8,7 +8,7 @@ module ManifestController
     payload = {
       schema_version:  '1.0',
       name:            'discourse-plugin',
-      version:         '1.2.6',
+      version:         '1.2.7',
       description:     'AI Connect for Discourse — search, read and participate in community discussions via AI agents',
       api_version:     'v1',
       capabilities:    { tools: true, resources: false, prompts: false },
@@ -26,6 +26,13 @@ module ManifestController
       },
       tools: registry.all_tools(scope: scope),
     }
+
+    # user-confirm-v1 (1.2.7): advertised only when a loaded tool declares confirmation (the Pro package).
+    if defined?(AiConnect::Confirmation) && (block = AiConnect::Confirmation.manifest_block(payload[:tools]))
+      payload[:capabilities][:confirmation] = true
+      payload[:confirmation] = block
+      payload[:instructions] = AiConnect::Confirmation::INSTRUCTIONS
+    end
 
     if registry.respond_to?(:brief_metrics)
       metrics = registry.brief_metrics

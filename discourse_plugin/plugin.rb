@@ -2,7 +2,7 @@
 
 # name: discourse-ai-connect
 # about: Lets AI agents (Claude, ChatGPT, Gemini, etc.) search and read your Discourse forum with OAuth 2.0, as the user who approved them.
-# version: 1.2.6
+# version: 1.2.7
 # authors: Chen Gold-Tovi (chgold)
 # url: https://github.com/chgold/discourse-ai-connect
 # required_version: 2.7.0
@@ -40,6 +40,11 @@ after_initialize do
     get    '/tokens'                  => 'proxy#user_tokens'
     delete '/tokens/:prefix'          => 'proxy#revoke_user_token',       constraints: { prefix: /[^\/]+/ }
     post   '/tokens/bulk-revoke'      => 'proxy#bulk_revoke_user_tokens'
+
+    # AI actions waiting for the user's confirmation (user-confirm-v1, 1.2.7) — session + CSRF only
+    get  '/ai-actions'                  => 'proxy#ai_actions'
+    post '/ai-actions/decide'           => 'proxy#ai_actions_decide'
+    post '/ai-actions/autonomy/revoke'  => 'proxy#ai_actions_revoke_autonomy'
 
     # Admin token management (Discourse admin only)
     get    '/admin/tokens'            => 'proxy#admin_tokens'
