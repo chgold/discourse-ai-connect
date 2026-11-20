@@ -22,7 +22,7 @@ module ConfirmationsController
       grants: 'Actions you allowed without asking', remove: 'Remove', no_grants: 'None.',
       recent: 'Recent decisions', done_ok: 'Done. The action ran once, in your name.',
       done_fail: 'The action was confirmed but Discourse refused it: %<error>s',
-      rejected: 'Rejected. Nothing was done.', gone: 'This request is no longer waiting (status: %<status>s).',
+      rejected: 'Rejected. Nothing was done.', running: 'Confirmed. The action is running now, once, in your name. Refresh this page in a moment to see the result.', gone: 'This request is no longer waiting (status: %<status>s).',
       not_found: 'This request was not found for your account.', revoked: 'Removed. The assistant will ask again next time.',
       st_pending: 'waiting', st_executed: 'done', st_failed: 'failed', st_rejected: 'rejected', st_expired: 'expired', st_executing: 'running'
     },
@@ -36,7 +36,7 @@ module ConfirmationsController
       grants: 'פעולות שהרשית בלי לשאול', remove: 'להסיר', no_grants: 'אין.',
       recent: 'החלטות אחרונות', done_ok: 'בוצע. הפעולה רצה פעם אחת, בשמך.',
       done_fail: 'אישרת, אבל Discourse סירב לבצע: %<error>s',
-      rejected: 'נדחה. שום דבר לא בוצע.', gone: 'הבקשה הזאת כבר לא מחכה (מצב: %<status>s).',
+      rejected: 'נדחה. שום דבר לא בוצע.', running: 'אושר. הפעולה רצה עכשיו, פעם אחת, בשמך. רעננו את הדף בעוד רגע כדי לראות את התוצאה.', gone: 'הבקשה הזאת כבר לא מחכה (מצב: %<status>s).',
       not_found: 'הבקשה לא נמצאה בחשבון שלך.', revoked: 'הוסר. העוזר יבקש אישור שוב בפעם הבאה.',
       st_pending: 'ממתין', st_executed: 'בוצע', st_failed: 'נכשל', st_rejected: 'נדחה', st_expired: 'פג תוקף', st_executing: 'בביצוע'
     }
@@ -171,13 +171,32 @@ module ConfirmationsController
        ConfirmationStore.grant_autonomy(uid, action['tool'], action['client_id'])
       ConfirmationStore.add_event(id, 'autonomy_granted', uid: uid, actor_uid: uid, tool: action['tool'], client_id: action['client_id'], ip: opts[:ip])
     end
-    stored = AiConnect::Confirmation.execute_confirmed(registry, action, ip: opts[:ip])
-    if stored && stored['status'] == 'executed'
+    # The tool calls Discourse back, and this request is itself being served by Discourse. On a
+    # single-worker Discourse a synchronous run would wait for the worker that waits for us (seen on
+    # DEV: 10 s proxy timeout, then the action ran). So the action runs in its own thread; we wait a
+    # few seconds for it and otherwise tell the user it is running (status_url / a refresh shows it).
+    worker = Thread.new do
+      AiConnect::Confirmation.execute_confirmed(registry, action, ip: opts[:ip])
+    rescue StandardError => e
+      ConfirmationStore.add_event(action['id'], 'execution_failed', uid: uid, actor_uid: uid, tool: action['tool'],
+                                  client_id: action['client_id'], ip: opts[:ip])
+      ConfirmationStore.finish(action['id'], false, { error: 'execution_error', message: e.class.name })
+    end
+    stored = worker.join(sync_wait) ? worker.value : nil
+    return [200, page(uid, opts, notice: tr(loc, :running), notice_kind: 'info')] if stored.nil?
+
+    if stored['status'] == 'executed'
       [200, page(uid, opts, notice: tr(loc, :done_ok), notice_kind: 'ok')]
     else
       err = stored && stored['result'].is_a?(Hash) ? (stored['result']['message'] || stored['result']['error']) : 'error'
       [200, page(uid, opts, notice: tr(loc, :done_fail, error: err.to_s), notice_kind: 'error')]
     end
+  end
+
+  def sync_wait
+    ENV['RACK_ENV'] == 'test' ? 30 : Float(ENV.fetch('AI_CONNECT_CONFIRM_WAIT', '3'))
+  rescue ArgumentError
+    3
   end
 
   def gone(uid, id, opts)
