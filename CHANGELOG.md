@@ -4,6 +4,14 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.8] - unreleased
+
+### Security
+- **OAuth `redirect_uri` must be registered (OAuth 2.1 / RFC 9700).** The consent screen and the consent POST accepted any `redirect_uri`, so a crafted link could deliver the authorization code to a third party, and Deny redirected to whatever address was posted (open redirect). Now the address must be one of the client's registered URIs (exact string match; a registered loopback `http://127.0.0.1/...` / `http://localhost/...` accepts any port, RFC 8252 §7.3). Refused requests get an error from the site itself — never a redirect. The client and its address are checked before Approve or Deny does anything; Deny keeps `state`.
+- **Token exchange is bound to the authorization request.** `redirect_uri` must equal the one used at authorize (an out-of-band code may omit it) and a `client_id` that is sent must be the code's client.
+- `code_challenge_method` other than `S256` is refused.
+- The default clients are registered with `urn:ietf:wg:oauth:2.0:oob`, the address every current connection (goldnat and the AI clients) uses, so existing connections keep working.
+
 ## [1.2.7] - unreleased
 
 ### Added — user confirmation for risky actions (user-confirm-v1)

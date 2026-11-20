@@ -193,7 +193,7 @@ RSpec.describe 'SEC-00 permission ceiling' do
       without_proxy_secret
       header 'X-Discourse-Uid', '1'
       post '/oauth/authorize', { client_id: 'claude', code_challenge: challenge, approved: 'true',
-                                 redirect_uri: 'http://app.local/cb', scope: 'read write' }
+                                 scope: 'read write' }
       expect(last_response.status).to eq(403)
       expect(last_response.headers['Location']).to be_nil
     end
@@ -250,7 +250,7 @@ RSpec.describe 'SEC-00 permission ceiling' do
     it 'OAuth consent clamps delete for a member' do
       header 'X-Discourse-Uid', '2'
       post '/oauth/authorize', { client_id: 'claude', code_challenge: challenge, approved: 'true',
-                                 redirect_uri: 'http://app.local/cb', scope: 'read write delete' }
+                                 scope: 'read write delete' }
       code = last_response.headers['Location'][/code=([0-9a-f]+)/, 1]
       post '/api/ai-connect/token', { grant_type: 'authorization_code', code: code, code_verifier: verifier }
       expect(json['scope']).to eq('read write')

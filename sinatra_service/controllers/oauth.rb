@@ -2,6 +2,7 @@ require 'digest'
 require 'base64'
 require 'securerandom'
 require 'cgi'
+require_relative '../lib/redirect_uri'
 
 module OAuthController
   def self.base_url
@@ -60,6 +61,13 @@ module OAuthController
     redirect = params['redirect_uri'].to_s
     state    = params['state'].to_s
     name     = client['client_name']
+    # 1.2.8 (OAuth 2.1 / RFC 9700): only a redirect_uri the client registered
+    # (exact match). A refused request gets our error page — never a redirect.
+    unless RedirectUri.registered?(redirect, RedirectUri.registered_list(client['redirect_uris']))
+      return error_html('invalid_request', 'redirect_uri is not registered for this client')
+    end
+    method = params['code_challenge_method'].to_s
+    return error_html('invalid_request', 'Only S256 code_challenge_method is supported') unless method.empty? || method == 'S256'
 
     # If we can resolve the user from the Discourse session header, show consent.
     # Otherwise prompt them to login at Discourse first.
@@ -106,30 +114,43 @@ module OAuthController
   end
 
   def self.handle_consent(params, env)
+    # 1.2.8: client and registered redirect_uri are checked BEFORE Approve or
+    # Deny redirects anywhere (Deny used to redirect to whatever was posted).
+    client = DB.get_client(params['client_id'])
+    return { error: 'invalid_client' } unless client
+
+    redirect_uri = params['redirect_uri'].to_s
+    unless RedirectUri.registered?(redirect_uri, RedirectUri.registered_list(client['redirect_uris']))
+      return { error: 'invalid_request', error_description: 'redirect_uri is not registered for this client' }
+    end
+    oob = RedirectUri.normalise(redirect_uri) == RedirectUri::OOB
+    sep = redirect_uri.include?('?') ? '&' : '?'
+    state = params['state'].to_s
+
     if params['approved'] != 'true'
-      return { redirect: "#{params['redirect_uri']}?error=access_denied" }
+      return { error: 'access_denied', error_description: 'Authorization denied' } if oob
+
+      return { redirect: "#{redirect_uri}#{sep}error=access_denied&state=#{CGI.escape(state)}" }
     end
 
     # Re-validate the UID came from a trusted source — never trust the raw form value alone.
     uid = resolve_uid(params, env)
     return { error: 'unauthorized', error_description: 'User must be authenticated' } if uid.nil?
 
-    client = DB.get_client(params['client_id'])
-    return { error: 'invalid_client' } unless client
-
     challenge = params['code_challenge'].to_s
     return { error: 'invalid_request', error_description: 'PKCE challenge required' } if challenge.empty?
 
+    method = params['code_challenge_method'].to_s
+    return { error: 'invalid_request', error_description: 'Only S256 code_challenge_method is supported' } unless method.empty? || method == 'S256'
+
     code = SecureRandom.hex(32)
     scope = clamp_scope(sanitize_scope(params['scope']), uid)
-    DB.save_code(code, params['client_id'], uid, scope, challenge, params['redirect_uri'].to_s)
+    DB.save_code(code, params['client_id'], uid, scope, challenge, redirect_uri)
 
-    redirect_uri = params['redirect_uri']
-    state        = params['state'].to_s
-    dest = if redirect_uri.nil? || redirect_uri.empty? || redirect_uri == 'urn:ietf:wg:oauth:2.0:oob'
+    dest = if oob
              "#{base_url}/oauth/callback?code=#{code}&state=#{CGI.escape(state)}"
            else
-             "#{redirect_uri}?code=#{code}&state=#{CGI.escape(state)}"
+             "#{redirect_uri}#{sep}code=#{code}&state=#{CGI.escape(state)}"
            end
     { redirect: dest }
   end
@@ -141,6 +162,14 @@ module OAuthController
       rec = DB.get_code(params['code'])
       return { error: 'invalid_grant' } unless rec
       return { error: 'invalid_grant', error_description: 'Code expired or already used' } unless rec['used'] == 'f' && Time.now.to_i < rec['expires_at'].to_i
+      # 1.2.8: the code is bound to its client and redirect_uri.
+      unless params['client_id'].to_s.empty?
+        sent_client = DB.get_client(params['client_id'])
+        code_client = DB.get_client(rec['client_id'])
+        return { error: 'invalid_grant', error_description: 'client_id does not match the authorization code' } unless sent_client && code_client && sent_client['client_id'] == code_client['client_id']
+      end
+      sent_redirect = params.key?('redirect_uri') ? params['redirect_uri'] : nil
+      return { error: 'invalid_grant', error_description: 'redirect_uri does not match the authorization request' } unless RedirectUri.token_matches?(rec['redirect_uri'], sent_redirect)
       return { error: 'invalid_grant', error_description: 'PKCE failed' } unless verify_pkce(params['code_verifier'], rec['code_challenge'])
       DB.mark_code_used(params['code'])
       tokens = DB.save_tokens(rec['client_id'], rec['uid'].to_i, rec['scope'], source: 'oauth', ip_address: ip)

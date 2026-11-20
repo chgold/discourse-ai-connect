@@ -9,7 +9,7 @@ RSpec.describe 'Tool execution' do
   def issue_token(scope: 'read write')
     post '/oauth/authorize', {
       client_id: 'claude', code_challenge: challenge, scope: scope,
-      uid: '1', approved: 'true', redirect_uri: 'http://app.local/cb'
+      uid: '1', approved: 'true'
     }
     code = last_response.headers['Location'][/code=([0-9a-f]+)/, 1]
     post '/api/ai-connect/token', { grant_type: 'authorization_code', code: code, code_verifier: verifier }
