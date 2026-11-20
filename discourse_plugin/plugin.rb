@@ -2,7 +2,7 @@
 
 # name: discourse-ai-connect
 # about: Lets AI agents (Claude, ChatGPT, Gemini, etc.) search and read your Discourse forum with OAuth 2.0, as the user who approved them.
-# version: 1.2.9
+# version: 1.2.10
 # authors: Chen Gold-Tovi (chgold)
 # url: https://github.com/chgold/discourse-ai-connect
 # required_version: 2.7.0

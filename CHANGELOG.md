@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.10] - unreleased
+
+### Changed
+- **Official callback URLs for Claude and goldnat.** The default client `claude` (and the IDs that resolve to it, such as `claude-ai`) now also accepts Claude's official callback `https://claude.ai/api/mcp/auth_callback` (claude.ai, Claude Desktop, mobile), and `webmcp-master` / `goldnat` accept `https://goldnat.ai/oauth/callback`. Until now the default clients accepted only the out-of-band address. Nothing is removed, other clients are unchanged, and the address must still match exactly. Applied when the service starts (same place as the default-client seed), idempotent.
+- Tests: `spec/official_redirect_spec.rb`.
+
 ## [1.2.9] - unreleased
 
 ### Fixed

@@ -27,7 +27,7 @@ require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
 class DiscourseAiConnect < Sinatra::Base
-  PLUGIN_VERSION = '1.2.9'
+  PLUGIN_VERSION = '1.2.10'
 
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DiscourseAiConnect'

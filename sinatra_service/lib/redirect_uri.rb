@@ -19,6 +19,20 @@ module RedirectUri
   OOB = 'urn:ietf:wg:oauth:2.0:oob'
   LOOPBACK_HOSTS = %w[127.0.0.1 [::1] localhost].freeze
 
+  # 1.2.10: official OAuth callback URLs of the default clients whose vendor
+  # publishes one. Until 1.2.9 every default client held only OOB, so a product
+  # that redirects back to its own site was refused by the exact match. Only
+  # URLs from the vendor's own documentation:
+  #  - claude (claude.ai, Claude Desktop, mobile): https://claude.ai/api/mcp/auth_callback
+  #    (Anthropic connector docs, "Callback URLs"); 'claude-ai' etc. resolve to 'claude'.
+  #  - webmcp-master / goldnat (goldnat.ai): https://goldnat.ai/oauth/callback
+  #    (the redirect_uri goldnat's OAuth client sends).
+  OFFICIAL = {
+    'claude' => ['https://claude.ai/api/mcp/auth_callback'].freeze,
+    'webmcp-master' => ['https://goldnat.ai/oauth/callback'].freeze,
+    'goldnat' => ['https://goldnat.ai/oauth/callback'].freeze,
+  }.freeze
+
   module_function
 
   # Parse the stored redirect_uris column: JSON array / string, or a list
@@ -43,6 +57,17 @@ module RedirectUri
   def normalise(uri)
     s = uri.to_s
     s.empty? ? OOB : s
+  end
+
+  # Union of the stored list and the official URLs for this client.
+  # Returns the new JSON string, or nil when nothing changes.
+  def with_official(client_id, raw)
+    add = OFFICIAL[client_id.to_s]
+    return nil unless add
+
+    current = registered_list(raw)
+    merged = current + add.reject { |u| current.include?(u) }
+    merged.length == current.length ? nil : JSON.generate(merged)
   end
 
   def registered?(requested, registered)

@@ -1,6 +1,7 @@
 require 'pg'
 require 'securerandom'
 require 'logger'
+require_relative '../lib/redirect_uri'
 
 module DB
   LOGGER = Logger.new($stdout)
@@ -167,6 +168,18 @@ module DB
         "INSERT INTO ai_clients (client_id, client_name, redirect_uris, scopes) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING",
         [c[:id], c[:name], 'urn:ietf:wg:oauth:2.0:oob', c[:scopes]]
       )
+    end
+
+    # 1.2.10: official callback URLs (Claude, goldnat) on top of OOB — union,
+    # idempotent, runs on every start like the seed above (install + upgrade).
+    RedirectUri::OFFICIAL.each_key do |client_id|
+      row = conn.exec_params('SELECT redirect_uris FROM ai_clients WHERE client_id=$1', [client_id]).first
+      next unless row
+
+      updated = RedirectUri.with_official(client_id, row['redirect_uris'])
+      next if updated.nil?
+
+      conn.exec_params('UPDATE ai_clients SET redirect_uris=$1 WHERE client_id=$2', [updated, client_id])
     end
   end
 
