@@ -155,10 +155,20 @@ module OAuthController
     { redirect: dest }
   end
 
+  # 1.2.9: error page marker — the route answers it with HTTP 400.
+  class ErrorPage < String; end
+
+  # RFC 6749 §5.2 — HTTP status for a token endpoint error code.
+  def self.token_error_status(error)
+    error.to_s == 'invalid_client' ? 401 : 400
+  end
+
   def self.token(params, ip: nil)
     grant = params['grant_type']
+    return { error: 'invalid_request', error_description: 'grant_type is required' } if grant.nil? || grant.to_s.empty?
 
     if grant == 'authorization_code'
+      return { error: 'invalid_request', error_description: 'code is required' } if params['code'].to_s.empty?
       rec = DB.get_code(params['code'])
       return { error: 'invalid_grant' } unless rec
       return { error: 'invalid_grant', error_description: 'Code expired or already used' } unless rec['used'] == 'f' && Time.now.to_i < rec['expires_at'].to_i
@@ -177,6 +187,7 @@ module OAuthController
     end
 
     if grant == 'refresh_token'
+      return { error: 'invalid_request', error_description: 'refresh_token is required' } if params['refresh_token'].to_s.empty?
       rec = DB.get_token(params['refresh_token'])
       return { error: 'invalid_grant' } unless rec && rec['token_type'] == 'refresh' && Time.now.to_i < rec['expires_at'].to_i
       DB.revoke_token(params['refresh_token'])
@@ -207,7 +218,7 @@ module OAuthController
   end
 
   def self.error_html(error, description)
-    <<~HTML
+    ErrorPage.new(<<~HTML)
       <!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>AI Connect — Error</title>
       <style>body{font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:20px}
       .err{background:#fee;border:1px solid #f44;padding:14px;border-radius:6px;color:#900}</style></head><body>

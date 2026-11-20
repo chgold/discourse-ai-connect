@@ -18,7 +18,7 @@ RSpec.describe 'OAuth PKCE flow' do
   describe 'GET /oauth/authorize' do
     it 'requires client_id and code_challenge' do
       get '/oauth/authorize'
-      expect(last_response.status).to eq(200)
+      expect(last_response.status).to eq(400) # 1.2.9: was 200
       expect(last_response.body).to include('invalid_request')
     end
 
@@ -254,6 +254,108 @@ RSpec.describe 'OAuth PKCE flow' do
       # the code was not burned by the refused attempts
       post '/api/ai-connect/token', { grant_type: 'authorization_code', code: code, code_verifier: verifier, redirect_uri: 'http://app.local/cb', client_id: 'spec-agent' }
       expect(JSON.parse(last_response.body)['access_token']).to start_with('xfa_')
+    end
+  end
+
+  # 1.2.9 — RFC 6749 §5.2: token errors are HTTP 400 (401 for invalid_client) with
+  # the error JSON; success is 200; every token response is no-store.
+  describe 'token endpoint HTTP status (1.2.9)' do
+    def token(fields)
+      post '/api/ai-connect/token', fields
+      [last_response.status, JSON.parse(last_response.body), last_response.headers]
+    end
+
+    def fresh_code
+      post '/oauth/authorize', {
+        client_id: 'spec-agent', code_challenge: challenge, redirect_uri: 'http://app.local/cb',
+        scope: 'read', uid: '1', approved: 'true'
+      }
+      last_response.headers['Location'][/code=([0-9a-f]+)/, 1]
+    end
+
+    it 'unknown code → 400 invalid_grant' do
+      st, body, h = token(grant_type: 'authorization_code', code: 'deadbeef', code_verifier: verifier, redirect_uri: 'http://app.local/cb')
+      expect(st).to eq(400)
+      expect(body['error']).to eq('invalid_grant')
+      expect(body).not_to have_key('access_token')
+      expect(h['Cache-Control']).to eq('no-store')
+      expect(h['Pragma']).to eq('no-cache')
+    end
+
+    it 'missing grant_type → 400 invalid_request' do
+      st, body, = token({})
+      expect(st).to eq(400)
+      expect(body['error']).to eq('invalid_request')
+    end
+
+    it 'missing code → 400 invalid_request' do
+      st, body, = token(grant_type: 'authorization_code', code_verifier: verifier)
+      expect(st).to eq(400)
+      expect(body['error']).to eq('invalid_request')
+    end
+
+    it 'unsupported grant → 400 unsupported_grant_type' do
+      st, body, = token(grant_type: 'client_credentials')
+      expect(st).to eq(400)
+      expect(body['error']).to eq('unsupported_grant_type')
+    end
+
+    it 'wrong PKCE verifier → 400 invalid_grant, then the right one → 200' do
+      code = fresh_code
+      st, body, = token(grant_type: 'authorization_code', code: code, code_verifier: 'b' * 64, redirect_uri: 'http://app.local/cb')
+      expect(st).to eq(400)
+      expect(body['error']).to eq('invalid_grant')
+      st, body, h = token(grant_type: 'authorization_code', code: code, code_verifier: verifier, redirect_uri: 'http://app.local/cb')
+      expect(st).to eq(200)
+      expect(body['access_token']).to start_with('xfa_')
+      expect(h['Cache-Control']).to eq('no-store')
+    end
+
+    it 'reused code → 400 invalid_grant' do
+      code = fresh_code
+      token(grant_type: 'authorization_code', code: code, code_verifier: verifier, redirect_uri: 'http://app.local/cb')
+      st, body, = token(grant_type: 'authorization_code', code: code, code_verifier: verifier, redirect_uri: 'http://app.local/cb')
+      expect(st).to eq(400)
+      expect(body['error']).to eq('invalid_grant')
+    end
+
+    it 'redirect_uri / client mismatch → 400 invalid_grant' do
+      code = fresh_code
+      st, body, = token(grant_type: 'authorization_code', code: code, code_verifier: verifier, redirect_uri: 'https://evil.example/cb')
+      expect([st, body['error']]).to eq([400, 'invalid_grant'])
+      st, body, = token(grant_type: 'authorization_code', code: code, code_verifier: verifier, redirect_uri: 'http://app.local/cb', client_id: 'claude')
+      expect([st, body['error']]).to eq([400, 'invalid_grant'])
+    end
+
+    it 'bad / missing refresh_token → 400' do
+      st, body, = token(grant_type: 'refresh_token', refresh_token: 'xfr_nope')
+      expect([st, body['error']]).to eq([400, 'invalid_grant'])
+      st, body, = token(grant_type: 'refresh_token')
+      expect([st, body['error']]).to eq([400, 'invalid_request'])
+    end
+
+    it 'JSON body errors get the same status' do
+      post '/api/ai-connect/token', { grant_type: 'authorization_code', code: 'nope', code_verifier: verifier }.to_json,
+           { 'CONTENT_TYPE' => 'application/json' }
+      expect(last_response.status).to eq(400)
+      expect(JSON.parse(last_response.body)['error']).to eq('invalid_grant')
+    end
+
+    it 'maps invalid_client to 401' do
+      expect(OAuthController.token_error_status('invalid_client')).to eq(401)
+      expect(OAuthController.token_error_status('invalid_grant')).to eq(400)
+    end
+
+    it 'authorize refusals are HTTP 400 pages, consent stays 200' do
+      get '/oauth/authorize', { client_id: 'nonexistent', code_challenge: challenge, uid: '1' }
+      expect(last_response.status).to eq(400)
+      get '/oauth/authorize', { client_id: 'claude', code_challenge: challenge, uid: '1', redirect_uri: 'https://evil.example/steal' }
+      expect(last_response.status).to eq(400)
+      expect(last_response.headers['Location']).to be_nil
+      get '/oauth/authorize', { client_id: 'claude', code_challenge: challenge, uid: '1', code_challenge_method: 'plain' }
+      expect(last_response.status).to eq(400)
+      get '/oauth/authorize', { client_id: 'claude', code_challenge: challenge, uid: '1' }
+      expect(last_response.status).to eq(200)
     end
   end
 end

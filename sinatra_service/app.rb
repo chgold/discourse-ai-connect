@@ -27,7 +27,7 @@ require_relative 'middleware/auth'
 require_relative 'middleware/rate_limit'
 
 class DiscourseAiConnect < Sinatra::Base
-  PLUGIN_VERSION = '1.2.8'
+  PLUGIN_VERSION = '1.2.9'
 
   LOGGER = Logger.new($stdout)
   LOGGER.progname = 'DiscourseAiConnect'
@@ -165,7 +165,10 @@ class DiscourseAiConnect < Sinatra::Base
     halt 429, json_error('rate_limit_exceeded', window: rate_check[:window]) if rate_check[:limited]
     halt 503, json_error('proxy_secret_not_configured') if self.class.proxy_secret.empty?
     content_type :html
-    OAuthController.authorize(params, request.env)
+    page = OAuthController.authorize(params, request.env)
+    # 1.2.9: a refused request is an error page with HTTP 400 (was 200).
+    status 400 if page.is_a?(OAuthController::ErrorPage)
+    page
   end
 
   post '/oauth/authorize' do
@@ -192,7 +195,17 @@ class DiscourseAiConnect < Sinatra::Base
     # Sinatra params omit JSON bodies (only form-encoded); agents POST JSON here.
     json_body = parse_json(request.body.read)
     request.body.rewind
-    OAuthController.token(json_body.merge(params), ip: client_ip).to_json
+    input = json_body.is_a?(Hash) ? json_body.merge(params) : params
+    result = OAuthController.token(input, ip: client_ip)
+    # RFC 6749 §5.1/§5.2 (1.2.9): token responses are never cached; an error is
+    # HTTP 400 (401 + WWW-Authenticate for invalid_client), never 200.
+    headers 'Cache-Control' => 'no-store', 'Pragma' => 'no-cache'
+    if result[:error]
+      code = OAuthController.token_error_status(result[:error])
+      headers 'WWW-Authenticate' => 'Basic realm="ai-connect"' if code == 401
+      status code
+    end
+    result.to_json
   end
 
   # RFC 7009 token revocation (Servio SPEC §5.2). Deliberately unauthenticated:

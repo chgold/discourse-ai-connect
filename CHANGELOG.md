@@ -4,6 +4,12 @@ All notable changes to this project are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versioning follows
 [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.9] - unreleased
+
+### Fixed
+- **Token endpoint answers errors with the right HTTP status (RFC 6749 §5.2).** `POST /api/ai-connect/token` returned HTTP 200 for every error (`invalid_grant`, `unsupported_grant_type`, …), so clients that look at the status took a refused exchange for a success. Errors are now HTTP 400 with the standard `{"error": "...", "error_description": "..."}` JSON (401 + `WWW-Authenticate` for `invalid_client`); success stays 200. A missing `grant_type`, `code` or `refresh_token` is `invalid_request`. Every token response carries `Cache-Control: no-store` and `Pragma: no-cache` (RFC 6749 §5.1).
+- **Authorization error page is HTTP 400** (was 200) — unknown client, unregistered `redirect_uri`, missing PKCE, non-S256 method. The consent page itself stays 200.
+
 ## [1.2.8] - unreleased
 
 ### Security
